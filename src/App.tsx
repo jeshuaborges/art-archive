@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, onSignedOut } from "./api";
 import { prepareImage } from "./imageprep";
 import type { Config, FieldDef, Filters, Summary } from "./types";
 import { archivedChipLabel, emptyFilters } from "./types";
@@ -11,8 +11,10 @@ import { FilterSheet } from "./components/FilterSheet";
 import { PieceView, type PendingUpload } from "./components/PieceView";
 import { ROLES, UploadSheet } from "./components/UploadSheet";
 import { IArchive, ICheck, IClose, IPlus } from "./components/Icons";
+import { SignedOut } from "./components/SignedOut";
+import { shouldProbe } from "./session";
 import { landscapeChrome, stripSpec } from "./layout";
-import { useLayout } from "./viewport";
+import { useKeyboardInset, useLayout } from "./viewport";
 
 type View = "timeline" | "wall";
 
@@ -21,6 +23,7 @@ export function App() {
   const [fields, setFields] = useState<FieldDef[]>([]);
   const [items, setItems] = useState<Summary[] | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
   const [view, setViewState] = useState<View>(() => store<View>("view", "timeline"));
   const [q, setQ] = useState("");
   const [matches, setMatches] = useState<Map<string, number> | null>(null);
@@ -38,6 +41,7 @@ export function App() {
   const [selected, setSelected] = useState<Set<string> | null>(null); // bulk unarchive, in the "only archived" wall
   const archived = filters.archived;
   const layout = useLayout();
+  useKeyboardInset();
   const { landscape, compact, panel } = layout;
 
   const showToast = useCallback((m: string) => {
@@ -64,7 +68,24 @@ export function App() {
   useEffect(() => {
     Promise.all([api.config(), api.fields(), api.list()])
       .then(([c, f, l]) => { setConfig(c); setFields(f); setItems(l); })
-      .catch((e) => setBootError(e instanceof ApiError && e.status === 401 ? "You're signed out. Reload to sign in again." : e instanceof Error ? e.message : "Couldn't load the archive."));
+      .catch((e) => setBootError(e instanceof Error ? e.message : "Couldn't load the archive."));
+  }, []);
+
+  // An expired Access session: any request can notice it (api.ts), and coming
+  // back to the app checks it at most once a minute, so the prompt shows up on
+  // return rather than on the first tap.
+  useEffect(() => onSignedOut(() => setSignedOut(true)), []);
+  useEffect(() => {
+    let last = Date.now(); // the boot requests above just checked
+    const probe = () => {
+      if (document.visibilityState !== "visible" || !shouldProbe(Date.now(), last)) return;
+      last = Date.now();
+      api.me().catch(() => { /* signed out → onSignedOut; offline → the next action says so */ });
+    };
+    const onShow = (e: PageTransitionEvent) => { if (e.persisted) probe(); };
+    document.addEventListener("visibilitychange", probe);
+    window.addEventListener("pageshow", onShow);
+    return () => { document.removeEventListener("visibilitychange", probe); window.removeEventListener("pageshow", onShow); };
   }, []);
 
   // deep links: #/piece/<id>
@@ -194,7 +215,7 @@ export function App() {
     } catch (e) { showToast(e instanceof Error ? e.message : "Couldn't start a new work"); }
   };
 
-  if (bootError) return <div className="app" style={{ display: "grid", placeItems: "center", padding: 32, textAlign: "center", color: "var(--muted)" }}><div><div className="display" style={{ fontSize: 24, color: "var(--text)", marginBottom: 10 }}>Archive unavailable</div>{bootError}<div><button className="btn btn-ghost" style={{ marginTop: 18 }} onClick={() => location.reload()}>Reload</button></div></div></div>;
+  if (bootError) return <div className="app" style={{ display: "grid", placeItems: "center", padding: 32, textAlign: "center", color: "var(--muted)" }}>{signedOut ? <SignedOut /> : <div><div className="display" style={{ fontSize: 24, color: "var(--text)", marginBottom: 10 }}>Archive unavailable</div>{bootError}<div><button className="btn btn-ghost" style={{ marginTop: 18 }} onClick={() => location.reload()}>Reload</button></div></div>}</div>;
 
   const cur = byYear[tlIndex];
   const glow = cur?.palette?.length ? cur.palette : ["#3A2F5C", "#5C3A2A"];
@@ -307,6 +328,8 @@ export function App() {
       <div aria-live="polite" role="status" data-testid="toast" style={{ position: "absolute", left: "50%", bottom: tlLandscape ? `calc(${strip.height + 10}px + ${stripBottom})` : `calc(${landscape ? 76 : 96}px + var(--sab))`, zIndex: 60, transform: `translate(-50%, ${toast ? 0 : 16}px)`, opacity: toast ? 1 : 0, transition: "transform .45s cubic-bezier(.2,.9,.25,1), opacity .3s", pointerEvents: "none", display: "flex", alignItems: "center", gap: 8, height: 42, padding: "0 16px", borderRadius: 999, background: "var(--text)", color: "#12110F", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", boxShadow: "0 14px 34px rgba(0,0,0,.45)" }}>
         <ICheck />{toast}
       </div>
+
+      {signedOut && <SignedOut />}
     </div>
   );
 }

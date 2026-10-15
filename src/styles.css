@@ -10,7 +10,8 @@
   --text: #F3EFE8;
   --text-2: #D9D3C9;
   --muted: #A39C91;
-  --faint: #7F786E;
+  /* 5.5:1 on --bg, 5.1:1 on --surface, 4.5:1 on --surface-3 (WCAG AA for small text) */
+  --faint: #8F887D;
   --poppy: #FF8A4C;
   --poppy-soft: #FFB28A;
   --lupine: #A796FF;
@@ -34,18 +35,22 @@
   /* side gutters: 16px, or more where the notch is */
   --gl: max(16px, var(--sal));
   --gr: max(16px, var(--sar));
+  /* height the on-screen keyboard covers (viewport.ts useKeyboardInset); 0 when it's down */
+  --kb: 0px;
   color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 /* html and body share the app's background, so no seam can show around it */
-html { height: 100%; background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html { height: 100%; background: var(--bg); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; -webkit-tap-highlight-color: transparent; }
 body, #root { height: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--text); font-family: var(--sans);
   -webkit-font-smoothing: antialiased; overscroll-behavior: none;
 }
-button, input, textarea, select { font: inherit; color: inherit; -webkit-tap-highlight-color: transparent; }
+button, input, textarea, select { font: inherit; color: inherit; }
+/* no double-tap-to-zoom wait on controls */
+button, a, [role="button"] { touch-action: manipulation; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -79,7 +84,7 @@ html.standalone .app { bottom: auto; height: 100vh; }
 .press { transition: transform .22s cubic-bezier(.2, .9, .3, 1); }
 .press:active { transform: scale(.95); }
 .mono { font-family: var(--mono); }
-.lbl { font-family: var(--mono); font-size: 10.5px; letter-spacing: .14em; color: var(--muted); text-transform: uppercase; }
+.lbl { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; color: var(--muted); text-transform: uppercase; }
 .display { font-family: var(--display); letter-spacing: -.02em; }
 .clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
@@ -153,8 +158,13 @@ textarea.field { height: auto; padding: 12px 13px; line-height: 1.45; resize: no
 .chipin { animation: chipin .45s cubic-bezier(.3, 1.4, .5, 1) both; }
 .spinner { width: 16px; height: 16px; border-radius: 99px; border: 2px solid rgba(243, 239, 232, .2); border-top-color: var(--lupine-soft); animation: spin .8s linear infinite; }
 
+@keyframes breathe { from { opacity: 1 } to { opacity: .35 } }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+  /* one near-instant run, so infinite animations don't flicker; nothing scrolls smoothly */
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  /* loading states without motion: a still placeholder, and a spinner that fades in and out instead of turning */
+  .skel { animation: none !important; background: #22201C; }
+  .spinner { animation: breathe 1.2s ease-in-out infinite alternate !important; }
 }
 @keyframes heroIn { from { opacity: 0; transform: scale(.96) } }
 .heroin { animation: heroIn .55s var(--ease-out) backwards; }

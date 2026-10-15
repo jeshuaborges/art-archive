@@ -9,6 +9,7 @@
     "dev": "npm run build && npm run db:migrate && wrangler dev --env dev --port 8787",
     "dev:ui": "vite",
     "seed": "node scripts/seed.mjs",
+    "icons": "node scripts/icons.mjs",
     "test:unit": "vitest run",
     "test:api": "bash tests/run-api.sh",
     "test:e2e": "bash tests/run-e2e.sh",
@@ -24,6 +25,9 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261015.1",
+    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "@vitejs/plugin-react": "^4.7.0",

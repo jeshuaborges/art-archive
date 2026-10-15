@@ -58,7 +58,7 @@ export function Sheet({ open, onClose, label, children, header, footer, maxHeigh
           <div className="sheet-handle" />
           {header}
         </div>
-        <div className="scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>{open || dy ? children : null}</div>
+        <div className="scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto", paddingBottom: "var(--kb)" }}>{open || dy ? children : null}</div>
         {footer}
       </section>
     </>

@@ -182,9 +182,9 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
                   transform: `translateY(${-near * S.lift}px) scale(${1 + near * S.grow - Math.min(d, 3) * 0.04})`, opacity: 1 - Math.min(d, 4) * 0.16,
                   boxShadow: on ? "0 12px 26px rgba(0,0,0,.55),0 0 0 2px #F3EFE8" : "0 4px 10px rgba(0,0,0,.35)",
                   transition: dragging ? "none" : "transform .45s var(--ease-out), opacity .3s, box-shadow .3s" }}>
-                {a.thumb ? <img src={a.thumb} alt="" draggable={false} loading="lazy" className="art-img" /> : <PreviewTile state={a.preview} compact />}
+                {a.thumb ? <img src={a.thumb} alt="" draggable={false} loading="lazy" decoding="async" className="art-img" /> : <PreviewTile state={a.preview} compact />}
               </button>
-              <span aria-hidden style={{ position: "absolute", top: S.label, left: i * SP, width: S.thumb, textAlign: "center", fontFamily: "var(--mono)", fontSize: 10, color: on ? "var(--text)" : "#6E685F" }}>{a.yearStart ?? "—"}</span>
+              <span aria-hidden style={{ position: "absolute", top: S.label, left: i * SP, width: S.thumb, textAlign: "center", fontFamily: "var(--mono)", fontSize: 11, color: on ? "var(--text)" : "var(--faint)" }}>{a.yearStart ?? "—"}</span>
             </div>
           );
         })}
@@ -219,8 +219,8 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
                 {yearsOutline(`${yearSize}px`, "left")}
               </div>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 5, paddingBottom: Math.round(yearSize * 0.08), minWidth: 0 }}>
-                <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".14em", color: "var(--accent-soft)", whiteSpace: "nowrap" }}>NO. {item.catalogId}</span>
-                <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".12em", color: "var(--faint)", whiteSpace: "nowrap" }}>{cur + 1} OF {n}</span>
+                <span className="mono" style={{ fontSize: 11, letterSpacing: ".14em", color: "var(--accent-soft)", whiteSpace: "nowrap" }}>NO. {item.catalogId}</span>
+                <span className="mono" style={{ fontSize: 11, letterSpacing: ".12em", color: "var(--faint)", whiteSpace: "nowrap" }}>{cur + 1} OF {n}</span>
                 {item.archivedAt && <ArchivedBadge style={{ position: "static", height: 20 }} />}
                 {match !== undefined && <span className="popin" style={{ height: 20, padding: "0 8px", display: "flex", alignItems: "center", borderRadius: 99, background: "var(--lupine-deep)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap" }}>{pct(match)} match</span>}
               </div>
@@ -249,7 +249,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
         <div onPointerDown={heroDown} onPointerUp={heroUp} onPointerCancel={() => (h.current = null)} data-testid="hero"
           style={{ position: "absolute", inset: "28px 0 0", touchAction: "pan-y", cursor: "pointer" }}>
           {heroArt}
-          {item.archivedAt && <ArchivedBadge style={{ left: 28, right: "auto", top: 0, height: 28, fontSize: 10.5 }} />}
+          {item.archivedAt && <ArchivedBadge style={{ left: 28, right: "auto", top: 0, height: 28, fontSize: 11 }} />}
           {match !== undefined && <span className="popin" style={{ position: "absolute", right: 28, top: 0, height: 28, padding: "0 10px", display: "flex", alignItems: "center", borderRadius: 99, background: "var(--lupine-deep)", color: "var(--lupine-soft)", fontSize: 12, fontWeight: 700 }}>{pct(match)} match</span>}
         </div>
       </div>

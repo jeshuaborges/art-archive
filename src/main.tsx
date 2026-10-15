@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import "./fonts.css";
 import "./styles.css";
 
 // Launched from the iPhone home screen: styles.css sizes the app by the screen

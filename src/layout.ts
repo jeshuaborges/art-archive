@@ -130,3 +130,28 @@ export function slideBox(landscape: boolean, cw: number, ch: number): { w: numbe
   return { w: Math.max(120, cw - 56), h: Math.max(120, ch - 40) };
 }
 
+
+/**
+ * How much of the layout viewport the on-screen keyboard covers at the bottom.
+ * iOS overlays the keyboard rather than shrinking the page, so it shows only as
+ * a shorter (and possibly scrolled) visual viewport. Pinch-zoom also shrinks
+ * the visual viewport, so a zoomed page reports no keyboard.
+ */
+export function keyboardInset(innerHeight: number, vv: { height: number; offsetTop: number; scale?: number }): number {
+  if (vv.scale != null && Math.abs(vv.scale - 1) > 0.01) return 0;
+  const inset = Math.round(innerHeight - vv.height - vv.offsetTop);
+  return inset > 0 ? inset : 0;
+}
+
+/**
+ * How far to scroll a container so a focused field sits inside the visible
+ * band (the part of the container above the keyboard), with a margin. Positive
+ * scrolls down. A field taller than the band is aligned to its top.
+ */
+export function revealDelta(field: { top: number; bottom: number }, band: { top: number; bottom: number }, margin = 16): number {
+  const top = band.top + margin, bottom = band.bottom - margin;
+  if (field.bottom - field.top > bottom - top) return Math.round(field.top - top);
+  if (field.bottom > bottom) return Math.round(field.bottom - bottom);
+  if (field.top < top) return Math.round(field.top - top);
+  return 0;
+}

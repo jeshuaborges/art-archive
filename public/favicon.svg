@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- App icon: a framed painting of hills under a setting sun. Full-bleed and opaque;
+       iOS rounds the corners. scripts/icons.mjs renders the PNGs from this file and
+       scales the "art" group to 80% for the Android maskable icon. -->
+  <defs>
+    <clipPath id="round"><rect width="1024" height="1024" rx="224"/></clipPath>
+    <radialGradient id="bg" cx="512" cy="440" r="640" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2E2850"/>
+      <stop offset=".75" stop-color="#14121A"/>
+      <stop offset="1" stop-color="#100F0E"/>
+    </radialGradient>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16131F"/>
+      <stop offset=".72" stop-color="#3D3366"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="512" cy="540" r="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#C9BEFF" stop-opacity=".5"/>
+      <stop offset="1" stop-color="#A796FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="shadow" cx="512" cy="900" r="330" gradientTransform="matrix(1 0 0 .16 0 756)" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#000" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FBF8F2"/>
+      <stop offset="1" stop-color="#E2DACD"/>
+    </linearGradient>
+    <linearGradient id="h1" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#A698F6"/><stop offset="1" stop-color="#7666D6"/></linearGradient>
+    <linearGradient id="h2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#54479E"/><stop offset="1" stop-color="#372D70"/></linearGradient>
+    <clipPath id="c"><rect x="252" y="182" width="520" height="640"/></clipPath>
+  </defs>
+  <g clip-path="url(#round)">
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <g id="art">
+  <rect x="140" y="840" width="744" height="120" fill="url(#shadow)"/>
+  <rect x="206" y="136" width="612" height="732" rx="12" fill="url(#frame)"/>
+  <g clip-path="url(#c)">
+    <rect x="252" y="182" width="520" height="640" fill="url(#sky)"/>
+    <rect x="252" y="182" width="520" height="640" fill="url(#glow)"/>
+    <circle cx="530" cy="500" r="112" fill="#FBF8F2"/>
+    <path d="M252 616 C330 560 400 544 470 556 C540 568 566 604 612 600 C676 594 712 532 772 528 V822 H252 Z" fill="url(#h1)"/>
+    <path d="M252 708 C350 664 446 662 538 694 C620 722 694 708 772 682 V822 H252 Z" fill="url(#h2)"/>
+    <path d="M252 780 C376 750 512 746 628 766 C690 776 730 774 772 764 V822 H252 Z" fill="#171427"/>
+  </g>
+  </g>
+</g>
+</svg>

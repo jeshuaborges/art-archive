@@ -355,7 +355,7 @@ export function PieceView(p: Props) {
             style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, padding: "10px 10px 10px 14px", borderRadius: 16, background: "var(--surface)", border: "1px solid var(--line-2)" }}>
             <span style={{ color: "var(--muted)", flex: "none" }}><IArchive /></span>
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="mono" style={{ fontSize: 10.5, letterSpacing: ".12em", color: "var(--text)" }}>ARCHIVED</div>
+              <div className="mono" style={{ fontSize: 11, letterSpacing: ".12em", color: "var(--text)" }}>ARCHIVED</div>
               <div style={{ marginTop: 2, fontSize: 13, lineHeight: 1.35, color: "var(--muted)" }}>Hidden from browsing and search. Nothing is deleted.</div>
             </div>
             <button className="btn btn-light press" style={{ height: 40, padding: "0 14px", fontSize: 14 }} onClick={() => setPieceArchived(false)} data-testid="unarchive-piece">Unarchive</button>
@@ -427,7 +427,7 @@ export function PieceView(p: Props) {
         <div style={{ padding: "30px 0 0" }}>
           <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, padding: "0 20px" }}>
             <span className="display" style={{ fontSize: 20, fontWeight: 700 }}>How it came together</span>
-            <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap" }}>{journey.length} STEPS · {art.images.length} IMAGES</span>
+            <span className="mono" style={{ fontSize: 11, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap" }}>{journey.length} STEPS · {art.images.length} IMAGES</span>
           </div>
           <div className="scroll" style={{ marginTop: 14, overflowX: "auto" }}>
             <div style={{ position: "relative", display: "flex", gap: 14, padding: "0 20px 4px", width: "max-content" }} data-testid="journey">
@@ -439,10 +439,10 @@ export function PieceView(p: Props) {
                     onClick={() => { setKind("all"); setIdx(art.images.findIndex((x) => x.id === im.id)); scroller.current?.scrollTo({ top: 0, behavior: "smooth" }); }}
                     style={{ position: "relative", width: 100, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
                     <div style={{ width: 100, height: 92, borderRadius: 12, overflow: "hidden", background: "#23201C", boxShadow: on ? `0 0 0 2px var(--bg-2),0 0 0 4px ${KIND_META[im.kind].color}` : "0 6px 16px rgba(0,0,0,.35)", transition: "box-shadow .3s" }}>
-                      {im.thumb ? <img src={im.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <div style={{ position: "relative", width: "100%", height: "100%" }}><PreviewTile state={im.preview} compact /></div>}
+                      {im.thumb ? <img src={im.thumb} alt="" loading="lazy" decoding="async" className="art-img" draggable={false} /> : <div style={{ position: "relative", width: "100%", height: "100%" }}><PreviewTile state={im.preview} compact /></div>}
                     </div>
-                    <span style={{ position: "absolute", left: 6, top: 6, width: 22, height: 22, borderRadius: 99, background: "rgba(18,17,15,.8)", display: "grid", placeItems: "center", fontFamily: "var(--mono)", fontSize: 10.5, fontWeight: 600 }}>{j + 1}</span>
-                    <span className="mono" style={{ display: "block", marginTop: 9, fontSize: 9.5, letterSpacing: ".12em", color: KIND_META[im.kind].color }}>{KIND_META[im.kind].short}</span>
+                    <span style={{ position: "absolute", left: 6, top: 6, width: 22, height: 22, borderRadius: 99, background: "rgba(18,17,15,.8)", display: "grid", placeItems: "center", fontFamily: "var(--mono)", fontSize: 11, fontWeight: 600 }}>{j + 1}</span>
+                    <span className="mono" style={{ display: "block", marginTop: 9, fontSize: 11, letterSpacing: ".12em", color: KIND_META[im.kind].color }}>{KIND_META[im.kind].short}</span>
                     <span className="clamp2" style={{ marginTop: 3, fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{im.role || KIND_META[im.kind].label}</span>
                   </button>
                 );
@@ -468,7 +468,7 @@ export function PieceView(p: Props) {
                 <button key={s.id} className="press" onClick={() => p.onOpen(s.id)} aria-label={`Open ${s.a.title || "Untitled"}, ${pct(s.match)} similar`}
                   style={{ width: 132, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
                   <div style={{ position: "relative", width: 132, height: 132, borderRadius: 14, overflow: "hidden", background: "#23201C" }}>
-                    {s.a.thumb ? <img src={s.a.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <PreviewTile state={s.a.preview} compact />}
+                    {s.a.thumb ? <img src={s.a.thumb} alt="" loading="lazy" decoding="async" className="art-img" draggable={false} /> : <PreviewTile state={s.a.preview} compact />}
                     <span style={{ position: "absolute", left: 7, top: 7, height: 22, padding: "0 7px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(42,37,71,.92)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700 }}>{pct(s.match)}</span>
                   </div>
                   <span className="clamp2" style={{ marginTop: 7, fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{s.a.title || "Untitled"}</span>
@@ -503,7 +503,7 @@ export function PieceView(p: Props) {
             {!landscape && dotsEl}
             {tabsEl}
             <div ref={infoRef}>{infoEl}</div>
-            <div style={{ height: `calc(${landscape ? 110 : 140}px + var(--sab))` }} />
+            <div style={{ height: `calc(${landscape ? 110 : 140}px + var(--sab) + var(--kb))` }} />
           </>
         )}
       </div>
@@ -533,7 +533,7 @@ export function PieceView(p: Props) {
         <>
           <div className="scrim" style={{ opacity: 1, zIndex: 40 }} onClick={() => setMenu(null)} aria-hidden />
           <div role="dialog" aria-label="Image options" data-testid="image-options"
-            className="inup scroll" style={{ position: "absolute", left: landscape ? mediaW + 12 : 12, right: landscape ? "max(12px, var(--sar))" : 12, bottom: "calc(12px + var(--sab))", maxHeight: "calc(100% - 24px - var(--sat) - var(--sab))", overflowY: "auto", zIndex: 41, borderRadius: 24, background: "var(--surface)", border: "1px solid var(--line)", padding: 10 }}>
+            className="inup scroll" style={{ position: "absolute", left: landscape ? mediaW + 12 : 12, right: landscape ? "max(12px, var(--sar))" : 12, bottom: "calc(12px + max(var(--sab), var(--kb)))", maxHeight: "calc(100% - 24px - var(--sat) - max(var(--sab), var(--kb)))", overflowY: "auto", zIndex: 41, borderRadius: 24, background: "var(--surface)", border: "1px solid var(--line)", padding: 10 }}>
             {menu === "main" && curImage.archivedAt && (
               <>
                 <div style={{ padding: "8px 10px 12px", display: "flex", alignItems: "center", gap: 12 }}>
@@ -601,7 +601,7 @@ export function PieceView(p: Props) {
 function MenuThumb({ im, dim }: { im: ImageDTO; dim?: boolean }) {
   return (
     <div style={{ position: "relative", width: 44, height: 44, flex: "none", borderRadius: 8, overflow: "hidden", opacity: dim ? 0.7 : 1 }}>
-      {im.thumb ? <img src={im.thumb} alt="" style={{ width: 44, height: 44, objectFit: "cover" }} /> : <PreviewTile state={im.preview} compact />}
+      {im.thumb ? <img src={im.thumb} alt="" decoding="async" style={{ width: 44, height: 44, objectFit: "cover" }} /> : <PreviewTile state={im.preview} compact />}
     </div>
   );
 }
@@ -673,7 +673,7 @@ function FieldEditor({ f, value, onChange, error }: { f: FieldDef; value: unknow
           {f.options.allowNew !== false && !adding && <button className="chip press" onClick={() => setAdding(true)} style={{ height: 36, borderStyle: "dashed" }}><IPlus size={14} />New</button>}
           {adding && (
             <form onSubmit={(e) => { e.preventDefault(); add(); }} style={{ display: "flex", gap: 6 }}>
-              <input autoFocus className="field" value={newVal} onChange={(e) => setNewVal(e.target.value)} onBlur={add} placeholder={`New ${f.label.toLowerCase()}`} aria-label={`New ${f.label}`} style={{ height: 36, width: 170, fontSize: 14 }} />
+              <input autoFocus className="field" value={newVal} onChange={(e) => setNewVal(e.target.value)} onBlur={add} placeholder={`New ${f.label.toLowerCase()}`} aria-label={`New ${f.label}`} style={{ height: 36, width: 170, fontSize: 16 }} />
             </form>
           )}
         </div>

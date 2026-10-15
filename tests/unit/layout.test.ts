@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  fitArt, heroBox, landscapeChrome, layoutFor, masonry, panelWidth, pieceSplit, slideBox, stripSpec, wallColumns,
+  fitArt, heroBox, keyboardInset, landscapeChrome, layoutFor, masonry, panelWidth, pieceSplit, revealDelta, slideBox, stripSpec, wallColumns,
 } from "../../src/layout";
 
 describe("layoutFor", () => {
@@ -174,5 +174,43 @@ describe("pieceSplit and slideBox", () => {
   });
   it("sizes landscape slides by the pane", () => {
     expect(slideBox(true, 456, 340)).toEqual({ w: 400, h: 300 });
+  });
+});
+
+describe("keyboardInset", () => {
+  it("is 0 with no keyboard", () => {
+    expect(keyboardInset(844, { height: 844, offsetTop: 0, scale: 1 })).toBe(0);
+  });
+  it("is the covered height when the keyboard is up", () => {
+    expect(keyboardInset(844, { height: 508, offsetTop: 0, scale: 1 })).toBe(336);
+  });
+  it("discounts the part Safari scrolled the visual viewport down by", () => {
+    expect(keyboardInset(844, { height: 508, offsetTop: 120, scale: 1 })).toBe(216);
+  });
+  it("never goes negative and rounds sub-pixel heights", () => {
+    expect(keyboardInset(844, { height: 850, offsetTop: 0 })).toBe(0);
+    expect(keyboardInset(390, { height: 189.6, offsetTop: 0 })).toBe(200);
+  });
+  it("ignores a pinch-zoomed page", () => {
+    expect(keyboardInset(844, { height: 422, offsetTop: 100, scale: 2 })).toBe(0);
+  });
+});
+
+describe("revealDelta", () => {
+  const band = { top: 100, bottom: 500 };
+  it("leaves a field that is already visible", () => {
+    expect(revealDelta({ top: 200, bottom: 246 }, band)).toBe(0);
+  });
+  it("scrolls down to bring a field up from behind the keyboard", () => {
+    expect(revealDelta({ top: 600, bottom: 646 }, band)).toBe(646 - 484);
+  });
+  it("scrolls up to a field above the band", () => {
+    expect(revealDelta({ top: 40, bottom: 86 }, band)).toBe(40 - 116);
+  });
+  it("aligns a field taller than the band to its top", () => {
+    expect(revealDelta({ top: 300, bottom: 900 }, band)).toBe(300 - 116);
+  });
+  it("takes a custom margin", () => {
+    expect(revealDelta({ top: 480, bottom: 500 }, band, 0)).toBe(0);
   });
 });

@@ -1,17 +1,34 @@
 import type { ArchivedMode, Artwork, Config, FieldDef, ImageDTO, Summary } from "./types";
 import type { Prepared } from "./imageprep";
+import { AJAX_HEADERS, classify, SIGNED_OUT_MESSAGE, UNREACHABLE_MESSAGE, type Outcome } from "./session";
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public details?: unknown) { super(message); }
+  constructor(public status: number, message: string, public details?: unknown, public outcome: Outcome = "error") { super(message); }
 }
+
+// Anyone who wants to know the Access session has expired (App shows a sign-in prompt).
+const signedOutListeners = new Set<() => void>();
+export function onSignedOut(listener: () => void): () => void {
+  signedOutListeners.add(listener);
+  return () => { signedOutListeners.delete(listener); };
+}
+function signedOut(): ApiError {
+  signedOutListeners.forEach((l) => l());
+  return new ApiError(401, SIGNED_OUT_MESSAGE, undefined, "signed-out");
+}
+const unreachable = (message = UNREACHABLE_MESSAGE) =>
+  new ApiError(0, message, undefined, classify({ kind: "network", online: navigator.onLine }));
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   let r: Response;
   try {
-    r = await fetch(path, { ...init, headers: { ...(init?.body && !(init.body instanceof FormData) ? { "content-type": "application/json" } : {}), ...(init?.headers || {}) } });
-  } catch {
-    throw new ApiError(0, "Can't reach the archive. Check the connection and try again.");
+    // redirect "manual": the API never redirects, so a redirect is Access's login page (see session.ts)
+    r = await fetch(path, { ...init, redirect: "manual", headers: { ...AJAX_HEADERS, ...(init?.body && !(init.body instanceof FormData) ? { "content-type": "application/json" } : {}), ...(init?.headers || {}) } });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
+    throw unreachable();
   }
+  if (classify({ kind: "response", status: r.status, type: r.type }) === "signed-out") throw signedOut();
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     throw new ApiError(r.status, body.error || r.statusText, body.details);
@@ -59,14 +76,17 @@ export const api = {
       fd.append("meta", JSON.stringify({ ...meta, width: p.width, height: p.height, palette: p.palette }));
       const xhr = new XMLHttpRequest();
       xhr.open("POST", `/api/artworks/${encodeURIComponent(artworkId)}/images`);
+      for (const [k, v] of Object.entries(AJAX_HEADERS)) xhr.setRequestHeader(k, v);
       xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
       xhr.onload = () => {
         let body: { error?: string; details?: unknown } = {};
         try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
-        if (xhr.status >= 200 && xhr.status < 300) resolve(body as never);
+        const outcome = classify({ kind: "response", status: xhr.status });
+        if (outcome === "ok") resolve(body as never);
+        else if (outcome === "signed-out") reject(signedOut());
         else reject(new ApiError(xhr.status, body.error || "Upload failed", body.details));
       };
-      xhr.onerror = () => reject(new ApiError(0, "Upload interrupted. Check the connection and try again."));
+      xhr.onerror = () => reject(unreachable("Upload interrupted. Check the connection and try again."));
       xhr.send(fd);
     });
   },

@@ -126,7 +126,7 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout
                             aria-label={selected ? `Select ${a.title || "Untitled"}` : `Open ${a.title || "Untitled"}`} aria-pressed={selected ? !!sel : undefined}
                             style={{ display: "block", width: "100%", padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)", animationDelay: `${Math.min(k++ * 40, 400)}ms` }}>
                             <div style={{ position: "relative", aspectRatio: String(asp), borderRadius: 14, overflow: "hidden", background: "#23201C", boxShadow: sel ? "0 0 0 3px var(--bg),0 0 0 5px var(--accent)" : "0 10px 24px rgba(0,0,0,.35)", transition: "box-shadow .25s" }}>
-                              {a.thumb ? <img src={a.thumb} alt="" loading="lazy" draggable={false} className="art-img" /> : <PreviewTile state={a.preview} />}
+                              {a.thumb ? <img src={a.thumb} alt="" loading="lazy" decoding="async" draggable={false} className="art-img" /> : <PreviewTile state={a.preview} />}
                               {ranked && m !== undefined && <span style={{ position: "absolute", left: 8, top: 8, height: 24, padding: "0 8px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(42,37,71,.92)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700 }}>{pct(m)}</span>}
                               {a.archivedAt && !selected && <ArchivedBadge />}
                               {selected && (
@@ -135,7 +135,7 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout
                               {a.imageCount > 1 && <span style={{ position: "absolute", right: 8, bottom: 8, height: 22, padding: "0 7px", display: "flex", alignItems: "center", gap: 4, borderRadius: 99, background: "rgba(18,17,15,.72)", fontSize: 11, fontWeight: 600 }}><IStack />{a.imageCount}</span>}
                             </div>
                             <span className="clamp2" style={{ marginTop: 8, fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{a.title || "Untitled"}</span>
-                            <span className="mono" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, fontSize: 10, letterSpacing: ".08em", color: "var(--muted)", textTransform: "uppercase" }}>
+                            <span className="mono" style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, fontSize: 11, letterSpacing: ".08em", color: "var(--muted)", textTransform: "uppercase" }}>
                               <span style={{ width: 6, height: 6, borderRadius: 9, background: STATUS_COLOR[a.status] }} />{[mediumOf(a), yearLabel(a)].filter(Boolean).join(" · ")}
                             </span>
                           </button>
@@ -167,7 +167,7 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout
 export function ArchivedBadge({ style }: { style?: React.CSSProperties }) {
   return (
     <span className="mono" data-testid="archived-badge"
-      style={{ position: "absolute", right: 8, top: 8, height: 22, padding: "0 8px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(18,17,15,.8)", border: "1px solid var(--line-2)", color: "var(--text-2)", fontSize: 9.5, fontWeight: 600, letterSpacing: ".1em", ...style }}>
+      style={{ position: "absolute", right: 8, top: 8, height: 22, padding: "0 8px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(18,17,15,.8)", border: "1px solid var(--line-2)", color: "var(--text-2)", fontSize: 11, fontWeight: 600, letterSpacing: ".1em", ...style }}>
       ARCHIVED
     </span>
   );

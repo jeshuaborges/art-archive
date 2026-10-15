@@ -14,6 +14,19 @@ export const ROLES: { label: string; kind: ImageKind; role: string }[] = [
   { label: "Signature", kind: "work", role: "Signature" },
 ];
 
+/** iPhone and iPad (iPadOS reports itself as a Mac with touch). */
+const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+/**
+ * `accept` for the Files picker. On iOS, `image/*` already covers HEIC, and
+ * naming `.heic`/`.heif` explicitly is the pattern reported to make Safari 17+
+ * hand over every picked image as HEIC under a renamed temp file
+ * (https://developer.apple.com/forums/thread/743049, https://bugs.webkit.org/show_bug.cgi?id=303803),
+ * so the extensions are left out there. Desktop browsers keep them, since not
+ * every OS maps .heic to an image type.
+ */
+export const filesAccept = (ios: boolean) => (ios ? "image/*,.tif,.tiff" : "image/*,.heic,.heif,.tif,.tiff");
+
 interface Props {
   open: boolean;
   mode: "photo" | "new";
@@ -28,6 +41,8 @@ export function UploadSheet({ open, mode, roleIdx, onRole, onClose, onFiles }: P
   const pick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = [...(e.target.files || [])];
     e.target.value = "";
+    // what the picker actually handed over (type/name differ by iOS version and source); see docs/iphone-web-app-audit.md item 7
+    console.debug("[upload] picked", e.target.dataset.testid, files.map((f) => ({ name: f.name, type: f.type, size: f.size })));
     if (files.length) onFiles(files);
   };
   const sources = [
@@ -67,7 +82,7 @@ export function UploadSheet({ open, mode, roleIdx, onRole, onClose, onFiles }: P
         </div>
         <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={pick} data-testid="input-camera" />
         <input ref={lib} type="file" accept="image/*" multiple hidden onChange={pick} data-testid="input-photos" />
-        <input ref={file} type="file" accept="image/*,.heic,.heif,.tif,.tiff" multiple hidden onChange={pick} data-testid="input-files" />
+        <input ref={file} type="file" accept={filesAccept(isIOS())} multiple hidden onChange={pick} data-testid="input-files" />
         <button className="press" onClick={onClose} style={{ width: "100%", height: 50, marginTop: 14, borderRadius: 16, border: 0, background: "transparent", color: "var(--muted)", fontSize: 15, fontWeight: 600 }}>Cancel</button>
       </div>
     </Sheet>
