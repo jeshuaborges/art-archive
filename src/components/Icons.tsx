@@ -1,0 +1,20 @@
+type P = { size?: number; className?: string; style?: React.CSSProperties };
+const base = (size = 18) => ({ width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeLinecap: "round" as const, strokeLinejoin: "round" as const, "aria-hidden": true });
+
+export const ISearch = ({ size, style }: P) => <svg {...base(size)} strokeWidth={2.2} style={style}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>;
+export const IClose = ({ size = 12 }: P) => <svg {...base(size)} strokeWidth={3}><path d="M6 6l12 12M18 6L6 18" /></svg>;
+export const IPlus = ({ size = 20 }: P) => <svg {...base(size)} strokeWidth={2.4}><path d="M12 5v14M5 12h14" /></svg>;
+export const IBack = ({ size = 20 }: P) => <svg {...base(size)} strokeWidth={2.2}><path d="M15 5l-7 7 7 7" /></svg>;
+export const ICheck = ({ size = 16 }: P) => <svg {...base(size)} strokeWidth={2.6}><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>;
+export const ISpark = ({ size = 14 }: P) => <svg {...base(size)} strokeWidth={2.1}><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /></svg>;
+export const ITimeline = ({ size = 15 }: P) => <svg {...base(size)} strokeWidth={2.2}><path d="M3 12h18" /><circle cx="7" cy="12" r="2.2" fill="currentColor" /><circle cx="17" cy="12" r="2.2" fill="currentColor" /><path d="M12 7v10" /></svg>;
+export const IWall = ({ size = 15 }: P) => <svg {...base(size)} strokeWidth={2.2}><rect x="4" y="4" width="7" height="9" rx="1.5" /><rect x="13" y="4" width="7" height="5" rx="1.5" /><rect x="4" y="15" width="7" height="5" rx="1.5" /><rect x="13" y="11" width="7" height="9" rx="1.5" /></svg>;
+export const ICamera = ({ size = 22 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>;
+export const IPhotos = ({ size = 22 }: P) => <svg {...base(size)} strokeWidth={2}><rect x="4" y="4" width="16" height="16" rx="3" /><circle cx="9" cy="9.5" r="1.6" /><path d="M20 16l-5-5-8 9" /></svg>;
+export const IFile = ({ size = 22 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M6 3h8l4 4v14H6z" /><path d="M14 3v4h4" /></svg>;
+export const IStack = ({ size = 11 }: P) => <svg {...base(size)} strokeWidth={2.4}><rect x="7" y="7" width="13" height="13" rx="2" /><path d="M4 16V5a1 1 0 011-1h11" /></svg>;
+export const IMore = ({ size = 20 }: P) => <svg {...base(size)} strokeWidth={2.6}><circle cx="5" cy="12" r=".6" /><circle cx="12" cy="12" r=".6" /><circle cx="19" cy="12" r=".6" /></svg>;
+export const IDownload = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>;
+export const IStar = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.6l1-5.8L3.5 9.7l5.9-.9z" /></svg>;
+export const ITrash = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>;
+export const ITag = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M3 12V4h8l10 10-8 8z" /><circle cx="7.5" cy="8.5" r="1.4" /></svg>;

@@ -1,0 +1,59 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "art-archive",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // The Vite build lands in ./dist. API, image and MCP routes run in the Worker;
+  // everything else is the single-page app.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/img/*", "/mcp"]
+  },
+  // Nightly JSON export of the whole archive into R2 (backups/YYYY-MM-DD.json).
+  "triggers": { "crons": ["17 10 * * *"] },
+
+  // ---------------------------------------------------------------- production
+  // Login is handled entirely by Cloudflare Access in front of this Worker.
+  // Set ACCESS_TEAM_DOMAIN (e.g. "yourteam.cloudflareaccess.com") and ACCESS_AUD
+  // (the Access application's AUD tag) so the Worker also verifies the Access JWT
+  // and cannot be reached around Access (e.g. via workers.dev).
+  "vars": {
+    "EMBEDDINGS": "workers-ai",
+    "EMBED_MODEL": "@cf/baai/bge-base-en-v1.5",
+    "VISION_MODEL": "@cf/llava-hf/llava-1.5-7b-hf",
+    "ACCESS_TEAM_DOMAIN": "",
+    "ACCESS_AUD": ""
+  },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "anne-archive", "database_id": "REPLACE_WITH_D1_DATABASE_ID", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "anne-archive-images" }],
+  "ai": { "binding": "AI" },
+  // Create with: npx wrangler vectorize create anne-archive-artworks --dimensions=768 --metric=cosine
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "anne-archive-artworks" }],
+
+  "env": {
+    // ------------------------------------------------------------- local dev
+    // Fully offline: local D1 + R2, a local embedding model stored in D1, and a
+    // dev identity instead of Access. Run with `npm run dev`.
+    "dev": {
+      "name": "art-archive-dev",
+      "vars": {
+        "EMBEDDINGS": "local",
+        "EMBED_MODEL": "local",
+        "VISION_MODEL": "",
+        "ALLOW_DEV_AUTH": "true",
+        "ACCESS_TEAM_DOMAIN": "",
+        "ACCESS_AUD": ""
+      },
+      "d1_databases": [
+        { "binding": "DB", "database_name": "anne-archive-dev", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+      ],
+      "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "anne-archive-images-dev" }]
+    }
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "name": "anne-laddon-archive",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc -p worker/tsconfig.json && tsc -p tsconfig.json",
+    "db:migrate": "wrangler d1 migrations apply DB --local --env dev",
+    "dev": "npm run build && npm run db:migrate && wrangler dev --env dev --port 8787",
+    "dev:ui": "vite",
+    "seed": "node scripts/seed.mjs",
+    "test:unit": "vitest run",
+    "test:api": "bash tests/run-api.sh",
+    "test:e2e": "bash tests/run-e2e.sh",
+    "deploy": "npm run build && wrangler d1 migrations apply DB --remote --env=\"\" && wrangler deploy --env=\"\"",
+    "test": "npm run typecheck && npm run test:unit && npm run test:api && npm run test:e2e"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "hono": "^4.13.13",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261015.1",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sharp": "^0.35.5",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4",
+    "vitest": "^3.2.7",
+    "wrangler": "^4.151.0"
+  },
+  "private": true,
+  "type": "module"
+}
