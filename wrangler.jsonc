@@ -3,6 +3,9 @@
   "name": "art-archive",
   "main": "worker/index.ts",
   "account_id": "9962565b22f960c8f86eb6597a4bd559", // Irving Family
+  // The family's address. Its Access app also covers workers.dev, which stays on
+  // for the MCP connector set up before the custom domain existed.
+  "routes": [{ "pattern": "art-archive.sashua.org", "custom_domain": true }],
   "workers_dev": true,
   // Preview URLs would sit outside the Access app; keep them off.
   "preview_urls": false,
