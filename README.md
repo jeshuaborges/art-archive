@@ -31,8 +31,9 @@ A phone-first archive for fifty years of Anne Laddon's work: every original, its
 | API | Hono on Workers (`worker/`) |
 | Records | D1. Core columns plus `attrs` JSON described by `field_defs` |
 | Images | R2: originals, `-display`, `-thumb`, and `record.json` sidecars |
-| Search | Production: Workers AI embeddings (`bge-base-en-v1.5`) in Vectorize, plus D1 FTS5. Local: an offline embedding model stored in D1, plus FTS5 |
-| Descriptions | Production: a Workers AI vision model describes the main image. Local: built from palette and fields |
+| Search | Production: Workers AI embeddings (`bge-base-en-v1.5`) in Vectorize, plus D1 FTS5. Local: an offline embedding model stored in D1, plus FTS5. Keyword search sees a change at once; search by meaning once indexing finishes |
+| Indexing | Cloudflare Workflow `ArtworkIndexer` (`worker/indexer.ts`): vision description, embedding and Vectorize upsert as retried steps after the request returns. FTS5 and `record.json` are written inline. Local dev runs the same steps inline |
+| Descriptions | Production: a Workers AI vision model describes the main image, as a Workflow step. If it keeps failing, the piece is indexed without one. Local: built from palette and fields |
 | Login | **Cloudflare Access.** The app has no auth code; it verifies the Access JWT and reads the email |
 | Backups | Cron trigger → `backups/YYYY-MM-DD.json` in R2 |
 
@@ -52,8 +53,8 @@ The sample works use real titles from anneladdon.com, but the images are generat
 
 ```bash
 npm run typecheck
-npm run test:unit    # fields, Access JWT verification, embeddings, palette, production search backend (fakes)
-npm run test:api     # 25 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
+npm run test:unit    # fields, Access JWT verification, embeddings, palette, indexing steps and order, production search backend (fakes)
+npm run test:api     # 30 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
 npm run test:e2e     # 21 browser steps in Chromium at 390×844 with touch, on a freshly seeded archive
 npm test             # all of the above
 ```

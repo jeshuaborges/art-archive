@@ -9,6 +9,8 @@ import {
 } from "./store";
 import { vectorBackend } from "./embed";
 
+export { ArtworkIndexer } from "./indexer";
+
 type App = { Bindings: Env; Variables: { user: Identity } };
 const intParam = (v: string | undefined, def: number, max: number) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 1 ? Math.min(max, n) : def; };
 const app = new Hono<App>();
