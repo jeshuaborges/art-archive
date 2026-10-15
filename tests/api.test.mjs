@@ -511,7 +511,7 @@ describe("MCP endpoint", () => {
     assert.equal(init.body.result.serverInfo.name, "anne-laddon-archive");
     assert.equal((await j("/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) })).status, 202);
     const tools = await rpc("tools/list");
-    assert.deepEqual(tools.body.result.tools.map((t) => t.name).sort(), ["get_artwork", "list_fields", "search_artworks", "update_artwork"]);
+    assert.deepEqual(tools.body.result.tools.map((t) => t.name).sort(), ["add_image", "archive_artworks", "archive_image", "create_artwork", "get_artwork", "list_fields", "search_artworks", "update_artwork"]);
   });
   test("searches, reads and updates through tools", async () => {
     const s = await rpc("tools/call", { name: "search_artworks", arguments: { query: "jazz music", limit: 3 } });
@@ -526,6 +526,61 @@ describe("MCP endpoint", () => {
     assert.equal(conflict.body.result.isError, true);
     const rev = await j(`/api/artworks/${g.id}/revisions`);
     assert.equal(rev.body[0].changed_by, "mcp:dev@localhost");
+  });
+  test("creates a piece, adds an image without previews, and archives both", async () => {
+    const call = async (name, args) => {
+      const r = await rpc("tools/call", { name, arguments: args });
+      return r.body.result ? { ...r.body.result, data: JSON.parse(r.body.result.content[0].text) } : r.body;
+    };
+    const created = (await call("create_artwork", { title: "Wombat harbour at dusk", yearStart: 2003, status: "in_studio", attrs: { medium: "Oil" } })).data;
+    assert.match(created.catalogId, /^2003-\d{3}$/);
+    assert.equal(created.title, "Wombat harbour at dusk");
+    assert.deepEqual(created.images, []);
+    assert.equal((await call("create_artwork", { title: "x", yearStart: 1700 })).isError, true);
+
+    // a 1×1 PNG, with no phone-made previews: the server's preview path takes it (pending locally, with no Images binding)
+    const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    const added = (await call("add_image", { artworkId: created.catalogId, kind: "work", caption: "From Claude", base64: png, filename: "dot.png", contentType: "image/png" })).data;
+    assert.equal(added.duplicate, false);
+    assert.equal(added.image.artworkId, created.id);
+    assert.equal(added.image.contentType, "image/png");
+    assert.equal(added.image.caption, "From Claude");
+    assert.equal(added.image.preview, "pending");
+    assert.equal(added.image.display, null);
+    assert.match(added.image.download, /\?download=1$/);
+    assert.equal((await call("add_image", { artworkId: created.id, kind: "work", base64: `data:image/png;base64,${png}` })).data.duplicate, true);
+    const got = (await call("get_artwork", { id: created.id })).data;
+    assert.equal(got.coverImageId, added.image.id);
+    assert.equal(got.images[0].preview, "pending");
+
+    // bad arguments are invalid params; a bad file is a tool error
+    assert.equal((await call("add_image", { artworkId: created.id, kind: "work" })).error.code, -32602);
+    assert.equal((await call("add_image", { artworkId: created.id, kind: "work", url: "http://127.0.0.1:8788/api/me" })).error.code, -32602);
+    assert.equal((await call("add_image", { artworkId: created.id, kind: "work", url: "file:///etc/passwd" })).error.code, -32602);
+    assert.equal((await call("add_image", { artworkId: created.id, kind: "work", base64: btoa("<svg></svg>") })).isError, true);
+    assert.equal((await call("add_image", { artworkId: "nope", kind: "work", base64: png })).isError, true);
+
+    // images
+    const hid = (await call("archive_image", { imageId: added.image.id })).data;
+    assert.deepEqual([hid.artworkId, hid.archived, hid.coverImageId], [created.id, true, null]);
+    assert.ok((await call("get_artwork", { id: created.id })).data.images[0].archivedAt);
+    const back = (await call("archive_image", { imageId: added.image.id, archived: false })).data;
+    assert.equal(back.coverImageId, added.image.id);
+    assert.equal((await call("archive_image", { imageId: "nope" })).isError, true);
+
+    // pieces: by catalog number, excluded from search unless asked
+    const ids = async (args) => (await call("search_artworks", { query: "wombat harbour", ...args })).data.map((x) => x.id);
+    assert.ok((await ids({})).includes(created.id));
+    assert.deepEqual((await call("archive_artworks", { ids: [created.catalogId, "missing-001"] })).data, { changed: [created.catalogId], unchanged: [], notFound: ["missing-001"] });
+    assert.ok(!(await ids({})).includes(created.id));
+    assert.ok((await ids({ includeArchived: true })).includes(created.id));
+    assert.deepEqual((await call("archive_artworks", { ids: [created.id] })).data.unchanged, [created.id]);
+    assert.ok((await call("get_artwork", { id: created.id })).data.archivedAt);
+    const rev = await j(`/api/artworks/${created.id}/revisions`);
+    assert.equal(rev.body[0].changed_by, "mcp:dev@localhost");
+    assert.deepEqual((await call("archive_artworks", { ids: [created.id], archived: false })).data.changed, [created.id]);
+    assert.ok((await ids({})).includes(created.id));
+    assert.equal((await call("archive_artworks", { ids: [] })).error.code, -32602);
   });
   test("returns JSON-RPC errors for unknown methods and tools", async () => {
     assert.equal((await rpc("nope")).body.error.code, -32601);

@@ -372,7 +372,8 @@ export async function listRevisions(env: Env, id: string) {
 }
 
 // ----------------------------------------------------------- images
-const MAX_ORIGINAL = 80 * 1024 * 1024, MAX_VARIANT = 10 * 1024 * 1024;
+export const MAX_ORIGINAL = 80 * 1024 * 1024;
+const MAX_VARIANT = 10 * 1024 * 1024;
 const imageMetaSchema = z.object({
   kind: z.enum(IMAGE_KINDS).default("work"),
   role: z.string().trim().max(80).default(""),

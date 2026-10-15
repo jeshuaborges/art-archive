@@ -22,7 +22,7 @@ A phone-first archive for fifty years of Anne Laddon's work: every original, its
   - A `record.json` sidecar sits next to each piece's images in R2.
   - A nightly JSON export of the whole database goes to `backups/` in R2.
   - Deletes are soft, and archiving is separate and reversible. Both keep everything in the export and `record.json`.
-- **MCP endpoint** (`/mcp`): Claude can search, read and update the archive.
+- **MCP endpoint** (`/mcp`): Claude can search, read, create and update pieces, add images, and archive or unarchive pieces and images.
 
 ## Architecture
 
@@ -55,8 +55,8 @@ The sample works use real titles from anneladdon.com, but the images are generat
 
 ```bash
 npm run typecheck
-npm run test:unit    # fields, Access JWT verification, embeddings, palette, indexing steps and order, archive decisions, storage classes and previews, production search backend (fakes)
-npm run test:api     # 42 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
+npm run test:unit    # fields, Access JWT verification, embeddings, palette, indexing steps and order, archive decisions, storage classes and previews, production search backend (fakes), MCP tool arguments
+npm run test:api     # 43 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
 npm run test:e2e     # 21 browser steps in Chromium at 390×844 with touch, on a freshly seeded archive
 npm test             # all of the above
 ```
@@ -107,7 +107,15 @@ No secrets are required: uploads go through the R2 binding, so there are no R2 A
 
 - Archive state: `POST /api/artworks/:id/archive` and `/unarchive`, the same for `/api/images/:id`. Bulk: `POST /api/artworks/archive` or `/unarchive` with `{ "ids": [...] }` (ids or catalog numbers, up to 500), answering `{ changed, unchanged, notFound }`. Archiving a piece is a new version with a revision; repeating it changes nothing. `npm run seed` prints the bulk command for the works it added.
 - `GET /api/artworks` and `GET /api/search` take `archived=exclude` (default), `include` or `only`. `GET /api/artworks/:id` always returns the piece, archived or not (`archivedAt`); there `archived` chooses its images, and `archivedImageCount` says how many are hidden.
-- MCP: `search_artworks` takes `includeArchived`; `get_artwork` shows `archivedAt` for the piece and each image.
+- MCP (`worker/mcp.ts`; argument parsing in `worker/tools.ts`). Changes are attributed to `mcp:<email>`.
+  - `search_artworks` `{ query?, medium?, status?, yearFrom?, yearTo?, limit?, includeArchived? }`: archived pieces are left out unless `includeArchived`.
+  - `get_artwork` `{ id }` (id or catalog number): all fields and images, with `archivedAt` and `preview` for each image.
+  - `list_fields` `{}`; `update_artwork` `{ id, version, title?, yearStart?, yearEnd?, circa?, status?, attrs? }`.
+  - `create_artwork` `{ title?, yearStart?, yearEnd?, circa?, status?, attrs? }`: the same input as `POST /api/artworks`; returns the piece.
+  - `add_image` `{ artworkId, kind, caption?, makeCover?, base64?, filename?, contentType?, url? }`: exactly one of `base64` (a `data:` URL works too) or `url` (public http(s) only; private and loopback hosts, credentials and redirects to them are refused). Up to 80 MB, like uploads. It goes through the same upload code as the app but sends no previews, so the server makes them (`preview: "pending"` until then; it stays pending locally). Returns the image and whether it was a duplicate.
+  - `archive_artworks` `{ ids, archived? }` (ids or catalog numbers, up to 500; `archived: false` brings them back): answers `{ changed, unchanged, notFound }`.
+  - `archive_image` `{ imageId, archived? }`: answers the piece's `coverImageId` afterwards.
+  - Bad arguments are JSON-RPC "invalid params" (`-32602`); not found, conflicts and rejected files come back as tool errors (`isError`).
 
 ## Known limits / next steps
 

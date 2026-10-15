@@ -251,7 +251,7 @@ export function App() {
 
         {archived !== "only" && (
           <button className="press" onClick={() => { setUpload({ mode: "new", roleIdx: 3 }); setSheet("upload"); }} data-testid="add-work"
-            style={{ position: "absolute", left: "50%", bottom: "calc(26px + env(safe-area-inset-bottom))", zIndex: 8, transform: "translateX(-50%)", height: 52, padding: "0 22px 0 18px", borderRadius: 999, border: 0, background: "var(--poppy)", color: "#1A110A", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 14px 34px rgba(255,138,76,.38)" }}>
+            style={{ position: "absolute", left: "50%", bottom: "calc(26px + env(safe-area-inset-bottom))", zIndex: 8, transform: "translateX(-50%)", height: 52, padding: "0 22px 0 18px", borderRadius: 999, border: 0, background: "var(--lupine)", color: "#16122B", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 14px 34px rgba(167,150,255,.34)" }}>
             <IPlus />Add work
           </button>
         )}
