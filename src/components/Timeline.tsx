@@ -136,7 +136,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
     const on = y.label === curYear;
     const dir = on ? 0 : (y.label < curYear ? -1 : 1);
     return (
-      <div key={y.label} style={{ position: "absolute", left: 0, right: 0, top: 0, textAlign: align, fontFamily: "var(--display)", fontSize: size, lineHeight: 1, fontWeight: 800, letterSpacing: "-.05em", color: "transparent", WebkitTextStroke: "1.5px rgba(243,239,232,.24)", opacity: on ? 1 : 0, transform: `translateY(${dir * 34}px)`, transition: "opacity .55s, transform .7s var(--ease-out)" }}>{y.label}</div>
+      <div key={y.label} style={{ position: "absolute", left: 0, right: 0, top: 0, textAlign: align, fontFamily: "var(--display)", fontSize: size, lineHeight: 1, fontWeight: 800, letterSpacing: "-.05em", color: "transparent", WebkitTextStroke: "1.5px rgba(243,239,232,.24)", opacity: on ? 1 : 0, transform: `translateY(${dir * 34}px)`, transition: "opacity .18s, transform .3s var(--ease-out)" }}>{y.label}</div>
     );
   });
 
@@ -144,7 +144,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
     const i = lo + j, dir = i < cur ? -1 : i > cur ? 1 : 0;
     const { w, h: hh } = fitArt(box.w, box.h, a.aspect);
     return (
-      <div key={a.id} className={dir === 0 ? "heroin" : ""} style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", opacity: dir === 0 ? 1 : 0, transform: `translateX(${dir * (landscape ? 90 : 60)}px) scale(${dir === 0 ? 1 : 0.92})`, transition: "opacity .5s, transform .7s var(--ease-out)", pointerEvents: "none" }}>
+      <div key={a.id} className={dir === 0 ? "heroin" : ""} style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", opacity: dir === 0 ? 1 : 0, transform: `translateX(${dir * (landscape ? 90 : 60)}px) scale(${dir === 0 ? 1 : 0.92})`, transition: "opacity .16s, transform .28s var(--ease-out)", pointerEvents: "none" }}>
         <div style={frameStyle(mediumOf(a))}>
           {a.display ? <img src={a.display} alt={dir === 0 ? a.title || "Untitled" : ""} draggable={false} style={{ width: Math.round(w), height: Math.round(hh), objectFit: "cover", background: "#23201C" }} />
             : <div style={{ position: "relative", width: Math.round(w), height: Math.round(hh) }}><PreviewTile state={a.preview} /></div>}

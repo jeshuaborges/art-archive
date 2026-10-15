@@ -167,4 +167,4 @@ textarea.field { height: auto; padding: 12px 13px; line-height: 1.45; resize: no
   .spinner { animation: breathe 1.2s ease-in-out infinite alternate !important; }
 }
 @keyframes heroIn { from { opacity: 0; transform: scale(.96) } }
-.heroin { animation: heroIn .55s var(--ease-out) backwards; }
+.heroin { animation: heroIn .22s var(--ease-out) backwards; }
