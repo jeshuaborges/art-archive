@@ -8,6 +8,8 @@ import react from "@vitejs/plugin-react";
 // ARCHIVE_ALLOW_WRITES=1, so iterating on the UI can't change the live archive by accident.
 
 const PROXIED = ["/api", "/img", "/mcp"];
+/** Request headers the real-data proxy never forwards: the caller's own login (cookies, Access JWT and identity). */
+export const FORWARD_DROP = ["cookie", "cf-access-jwt-assertion", "cf-access-authenticated-user-email", "cf-access-token"];
 
 /** Pure: should the real-data proxy let this request through? */
 export function allowProdRequest(method: string | undefined, allowWrites: boolean): boolean {
@@ -27,6 +29,17 @@ function prodProxy(env: Record<string, string>) {
   const rule = {
     target, changeOrigin: true, secure: true,
     headers: { "CF-Access-Client-Id": id, "CF-Access-Client-Secret": secret, "X-Requested-With": "XMLHttpRequest" },
+    // Through the tunnel the browser also sends its own Access login for archive-dev
+    // (the CF_Authorization cookie and Cf-Access-* headers). Production's Access
+    // checks that first and rejects it as another app's login, so drop it and
+    // authenticate with the service token alone.
+    // Production also answers with Set-Cookie: CF_Authorization for the service
+    // token; passed on, it would overwrite the browser's own archive-dev login
+    // cookie (same name) and sign it out. Never pass cookies back either.
+    configure(proxy: { on(ev: string, fn: (msg: { removeHeader?(name: string): void; headers?: Record<string, unknown> }) => void): void }) {
+      proxy.on("proxyReq", (req) => { for (const h of FORWARD_DROP) req.removeHeader?.(h); });
+      proxy.on("proxyRes", (res) => { if (res.headers) delete res.headers["set-cookie"]; });
+    },
     // Refuse writes before they leave the machine.
     bypass(req: { method?: string }, res: { statusCode: number; setHeader(k: string, v: string): void; end(b: string): void }) {
       if (allowProdRequest(req.method, allowWrites)) return undefined;
