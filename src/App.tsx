@@ -11,6 +11,8 @@ import { FilterSheet } from "./components/FilterSheet";
 import { PieceView, type PendingUpload } from "./components/PieceView";
 import { ROLES, UploadSheet } from "./components/UploadSheet";
 import { IArchive, ICheck, IClose, IPlus } from "./components/Icons";
+import { landscapeChrome, stripSpec } from "./layout";
+import { useLayout } from "./viewport";
 
 type View = "timeline" | "wall";
 
@@ -35,6 +37,8 @@ export function App() {
   const toastTimer = useRef<ReturnType<typeof setTimeout>>();
   const [selected, setSelected] = useState<Set<string> | null>(null); // bulk unarchive, in the "only archived" wall
   const archived = filters.archived;
+  const layout = useLayout();
+  const { landscape, compact, panel } = layout;
 
   const showToast = useCallback((m: string) => {
     setToast(m); clearTimeout(toastTimer.current);
@@ -198,52 +202,68 @@ export function App() {
   const noneArchived = items !== null && items.length === 0 && archived === "only";
   const none = items !== null && items.length > 0 && filtered.length === 0;
 
+  // where the floating controls go: centered at the bottom in portrait and on the
+  // landscape wall; on the landscape timeline, in the label panel, level with the filmstrip
+  const chrome = landscapeChrome(compact);
+  const strip = stripSpec(compact);
+  const stripBottom = "max(6px, var(--sab))";
+  const tlLandscape = landscape && view === "timeline";
+  const addH = compact ? 46 : 52;
+  const floatPos: React.CSSProperties = tlLandscape
+    ? { left: `calc(100% - var(--gr) - ${panel}px)`, bottom: `calc(${strip.height - strip.top - strip.thumb - (addH - strip.thumb) / 2}px + ${stripBottom})` }
+    : { left: "50%", bottom: `calc(${landscape ? 16 : 26}px + var(--sab))`, transform: "translateX(-50%)" };
+  const chipsPos: React.CSSProperties = !landscape
+    ? { left: 0, right: 0, top: "calc(72px + var(--sat))", height: 44 }
+    : view === "timeline"
+      ? { right: "var(--gr)", width: panel, top: `calc(${chrome.chipsTop}px + var(--sat))`, height: 34 }
+      : { left: "var(--gl)", right: `calc(var(--gr) + ${panel + 12}px)`, top: `calc(${chrome.barTop}px + var(--sat))`, height: 48 };
+
   return (
-    <div className="app" data-testid="app">
-      <div style={{ position: "absolute", inset: 0, overflow: "hidden", background: "var(--bg)", transform: detail ? "translateX(-28%)" : "none", filter: detail ? "brightness(.55)" : "none", transition: "transform .55s cubic-bezier(.2,.9,.25,1), filter .55s" }} aria-hidden={!!detail}>
-        <div aria-hidden style={{ position: "absolute", left: -120, top: 60, width: 360, height: 360, borderRadius: "50%", background: glow[0], filter: "blur(90px)", opacity: 0.45, transition: "background-color 1.1s ease" }} />
-        <div aria-hidden style={{ position: "absolute", right: -140, top: 320, width: 380, height: 380, borderRadius: "50%", background: glow[1] || glow[0], filter: "blur(100px)", opacity: 0.32, transition: "background-color 1.1s ease" }} />
+    <div className="app" data-testid="app" data-layout={landscape ? "landscape" : "portrait"} data-compact={compact ? "true" : undefined}>
+      <div className="clip" style={{ position: "absolute", inset: 0, background: "var(--bg)", transform: detail ? "translateX(-28%)" : "none", filter: detail ? "brightness(.55)" : "none", transition: "transform .55s cubic-bezier(.2,.9,.25,1), filter .55s" }} aria-hidden={!!detail}>
+        <div aria-hidden style={{ position: "absolute", left: landscape ? "8%" : -120, top: landscape ? -60 : 60, width: 360, height: 360, borderRadius: "50%", background: glow[0], filter: "blur(90px)", opacity: 0.45, transition: "background-color 1.1s ease" }} />
+        <div aria-hidden style={{ position: "absolute", right: landscape ? "6%" : -140, top: landscape ? "38%" : 320, width: 380, height: 380, borderRadius: "50%", background: glow[1] || glow[0], filter: "blur(100px)", opacity: 0.32, transition: "background-color 1.1s ease" }} />
 
-        <TopBar view={view} onView={setView} q={q} onQ={(v) => { setQ(v); setTlId(null); }} searching={searching} filterCount={chips.length} onOpenFilters={() => setSheet("filters")} />
+        <TopBar view={view} onView={setView} q={q} onQ={(v) => { setQ(v); setTlId(null); }} searching={searching} filterCount={chips.length} onOpenFilters={() => setSheet("filters")} layout={layout} />
 
-        <div className="scroll" style={{ position: "absolute", left: 0, right: 0, top: "calc(72px + env(safe-area-inset-top))", height: 44, zIndex: 5, overflowX: "auto", overflowY: "hidden" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, height: 44, padding: "0 16px", width: "max-content" }} data-testid="chips-row">
+        <div className="scroll" style={{ position: "absolute", ...chipsPos, zIndex: 5, overflowX: "auto", overflowY: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, height: "100%", padding: landscape ? 0 : "0 16px", width: "max-content" }} data-testid="chips-row">
             {chips.map((c) => (
               <button key={c.label} className="popin press" onClick={c.remove} aria-label={`Remove filter ${c.label}`}
                 style={{ display: "flex", alignItems: "center", gap: 6, height: 34, padding: "0 10px 0 12px", borderRadius: 999, border: "1px solid var(--line-2)", background: "var(--glass)", color: "var(--text)", fontSize: 13, fontWeight: 600, whiteSpace: "nowrap" }}>
                 {c.dot && <span style={{ width: 8, height: 8, borderRadius: 9, background: c.dot }} />}{c.label}<span style={{ color: "var(--muted)" }}><IClose /></span>
               </button>
             ))}
-            <span className="mono" style={{ fontSize: 11, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap", paddingLeft: 4 }} data-testid="count-label">
+            <span className="mono" style={{ fontSize: 11, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap", paddingLeft: landscape && !chips.length ? 0 : 4 }} data-testid="count-label">
               {items === null ? "LOADING…" : matches ? `${filtered.length} CLOSE ${filtered.length === 1 ? "MATCH" : "MATCHES"}` : archived === "only" ? (chips.length > 1 ? `${filtered.length} OF ${items.length} ARCHIVED` : `${items.length} ARCHIVED`) : chips.length ? `${filtered.length} OF ${items.length} WORKS` : `${items.length} ${items.length === 1 ? "WORK" : "WORKS"}`}
             </span>
           </div>
         </div>
 
-        {items === null && <div style={{ position: "absolute", left: 60, right: 60, top: 180, height: 300, borderRadius: 8 }} className="skel" />}
+        {items === null && <div style={landscape ? { position: "absolute", left: "calc(var(--gl) + 48px)", right: `calc(var(--gr) + ${panel + 72}px)`, top: "calc(28px + var(--sat))", bottom: `calc(${strip.height + 24}px + var(--sab))`, borderRadius: 8 } : { position: "absolute", left: 60, right: 60, top: 180, height: 300, borderRadius: 8 }} className="skel" />}
         {!empty && !none && items && view === "timeline" && (
-          <Timeline key="tl" list={byYear} index={tlIndex} onIndex={(i) => setTlId(byYear[i]?.id ?? null)} onOpen={(id) => openPiece(id)} matchOf={matches ? (id) => matches.get(id) : undefined} statusLabel={statusLabel} />
+          <Timeline key="tl" list={byYear} index={tlIndex} onIndex={(i) => setTlId(byYear[i]?.id ?? null)} onOpen={(id) => openPiece(id)} matchOf={matches ? (id) => matches.get(id) : undefined} statusLabel={statusLabel} layout={layout} />
         )}
         {!empty && !none && items && view === "wall" && (
           <Wall key="wall" list={ranked} ranked={!!matches} matchOf={matches ? (id) => matches.get(id) : undefined} onOpen={(id) => openPiece(id)}
-            selected={selecting ? selected! : undefined} onToggle={toggleSelected} />
+            selected={selecting ? selected! : undefined} onToggle={toggleSelected} layout={layout} />
         )}
         {none && (
-          <div className="inup" style={{ position: "absolute", left: 32, right: 32, top: "34%", textAlign: "center" }} data-testid="no-matches">
+          <div className="inup" style={{ position: "absolute", left: "calc(var(--gl) + 16px)", right: "calc(var(--gr) + 16px)", top: "34%", textAlign: "center" }} data-testid="no-matches">
             <div className="display" style={{ fontSize: 26, fontWeight: 700 }}>Nothing matches yet</div>
             <p style={{ margin: "10px 0 22px", fontSize: 15, lineHeight: 1.5, color: "var(--muted)" }}>Try fewer filters or describe the painting differently.</p>
             <button className="btn btn-light press" onClick={() => { setQ(""); setFilters(emptyFilters()); }}>Clear search &amp; filters</button>
           </div>
         )}
         {noneArchived && (
-          <div className="inup" style={{ position: "absolute", left: 32, right: 32, top: "30%", textAlign: "center" }} data-testid="none-archived">
+          <div className="inup" style={{ position: "absolute", left: "calc(var(--gl) + 16px)", right: "calc(var(--gr) + 16px)", top: "30%", textAlign: "center" }} data-testid="none-archived">
             <div className="display" style={{ fontSize: 26, fontWeight: 700 }}>Nothing is archived</div>
             <p style={{ margin: "10px 0 22px", fontSize: 15, lineHeight: 1.5, color: "var(--muted)" }}>Archive a piece from its page to put it out of sight without removing it.</p>
             <button className="btn btn-light press" onClick={() => setFilters((f) => ({ ...f, archived: "exclude" }))}>Back to the archive</button>
           </div>
         )}
         {empty && (
-          <div className="inup" style={{ position: "absolute", left: 32, right: 32, top: "30%", textAlign: "center" }}>
+          <div className="inup" style={{ position: "absolute", left: "calc(var(--gl) + 16px)", right: "calc(var(--gr) + 16px)", top: "30%", textAlign: "center" }}>
             <div className="display" style={{ fontSize: 28, fontWeight: 700 }}>Start the archive</div>
             <p style={{ margin: "10px 0 0", fontSize: 15, lineHeight: 1.5, color: "var(--muted)" }}>Photograph a painting and it becomes the first piece. Add studies, progress shots and details whenever you like.</p>
           </div>
@@ -251,32 +271,32 @@ export function App() {
 
         {archived !== "only" && (
           <button className="press" onClick={() => { setUpload({ mode: "new", roleIdx: 3 }); setSheet("upload"); }} data-testid="add-work"
-            style={{ position: "absolute", left: "50%", bottom: "calc(26px + env(safe-area-inset-bottom))", zIndex: 8, transform: "translateX(-50%)", height: 52, padding: "0 22px 0 18px", borderRadius: 999, border: 0, background: "var(--lupine)", color: "#16122B", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 14px 34px rgba(167,150,255,.34)" }}>
+            style={{ position: "absolute", ...floatPos, zIndex: 8, height: addH, padding: "0 22px 0 18px", borderRadius: 999, border: 0, background: "var(--lupine)", color: "#16122B", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 14px 34px rgba(167,150,255,.34)" }}>
             <IPlus />Add work
           </button>
         )}
         {archived === "only" && !!items?.length && !selecting && (
           <button className="press" onClick={() => { setView("wall"); setSelected(new Set()); vibrate(5); }} data-testid="select-archived"
-            style={{ position: "absolute", left: "50%", bottom: "calc(26px + env(safe-area-inset-bottom))", zIndex: 8, transform: "translateX(-50%)", height: 52, padding: "0 22px 0 18px", borderRadius: 999, border: "1px solid var(--line-2)", background: "var(--glass)", backdropFilter: "blur(14px)", color: "var(--text)", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap", boxShadow: "0 14px 34px rgba(0,0,0,.45)" }}>
+            style={{ position: "absolute", ...floatPos, zIndex: 8, height: addH, padding: "0 22px 0 18px", borderRadius: 999, border: "1px solid var(--line-2)", background: "var(--glass)", backdropFilter: "blur(14px)", color: "var(--text)", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap", boxShadow: "0 14px 34px rgba(0,0,0,.45)" }}>
             <IArchive />Select to unarchive
           </button>
         )}
         {selecting && (
           <div className="inup" data-testid="select-bar"
-            style={{ position: "absolute", left: 16, right: 16, bottom: "calc(20px + env(safe-area-inset-bottom))", zIndex: 8, display: "flex", gap: 10 }}>
+            style={{ position: "absolute", left: "var(--gl)", right: "var(--gr)", ...(landscape ? { width: "min(560px, calc(100% - 32px))", margin: "0 auto" } : {}), bottom: `calc(${landscape ? 14 : 20}px + var(--sab))`, zIndex: 8, display: "flex", gap: 10 }}>
             <button className="btn btn-ghost press" style={{ background: "var(--bg-2)" }} onClick={() => setSelected(null)}>Cancel</button>
             {selected!.size < filtered.length
               ? <button className="btn btn-ghost press" style={{ background: "var(--bg-2)" }} onClick={() => setSelected(new Set(filtered.map((a) => a.id)))}>All</button>
               : <button className="btn btn-ghost press" style={{ background: "var(--bg-2)" }} onClick={() => setSelected(new Set())}>None</button>}
             <button className="btn press" disabled={!selected!.size} onClick={unarchiveSelected} data-testid="unarchive-selected"
-              style={{ flex: 1, background: selected!.size ? "var(--poppy)" : "#8A847A", color: "#1A110A", transition: "background .3s" }}>
+              style={{ flex: 1, background: selected!.size ? "var(--accent)" : "#8A847A", color: "var(--on-accent)", transition: "background .3s" }}>
               {selected!.size ? `Unarchive ${selected!.size}` : "Tap pieces to select"}
             </button>
           </div>
         )}
       </div>
 
-      <PieceView id={detail} reloadKey={reloadKey} startEditing={editNew} fields={fields} statuses={config?.statuses || []} summaries={items || []} pending={pending}
+      <PieceView layout={layout} id={detail} reloadKey={reloadKey} startEditing={editNew} fields={fields} statuses={config?.statuses || []} summaries={items || []} pending={pending}
         onClose={closePiece} onOpen={(id) => openPiece(id)} onChanged={refresh} toast={showToast}
         onAddImages={(artworkId, roleIdx) => { setUpload({ mode: "photo", artworkId, roleIdx: roleIdx < 0 ? 0 : roleIdx }); setSheet("upload"); }} />
 
@@ -284,7 +304,7 @@ export function App() {
         filters={filters} onChange={(f) => { setFilters(f); setTlId(null); }} resultCount={filtered.length} bounds={bounds} />
       <UploadSheet open={sheet === "upload"} mode={upload.mode} roleIdx={upload.roleIdx} onRole={(i) => setUpload((u) => ({ ...u, roleIdx: i }))} onClose={() => setSheet(null)} onFiles={onFiles} />
 
-      <div aria-live="polite" role="status" data-testid="toast" style={{ position: "absolute", left: "50%", bottom: "calc(96px + env(safe-area-inset-bottom))", zIndex: 60, transform: `translate(-50%, ${toast ? 0 : 16}px)`, opacity: toast ? 1 : 0, transition: "transform .45s cubic-bezier(.2,.9,.25,1), opacity .3s", pointerEvents: "none", display: "flex", alignItems: "center", gap: 8, height: 42, padding: "0 16px", borderRadius: 999, background: "var(--text)", color: "#12110F", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", boxShadow: "0 14px 34px rgba(0,0,0,.45)" }}>
+      <div aria-live="polite" role="status" data-testid="toast" style={{ position: "absolute", left: "50%", bottom: tlLandscape ? `calc(${strip.height + 10}px + ${stripBottom})` : `calc(${landscape ? 76 : 96}px + var(--sab))`, zIndex: 60, transform: `translate(-50%, ${toast ? 0 : 16}px)`, opacity: toast ? 1 : 0, transition: "transform .45s cubic-bezier(.2,.9,.25,1), opacity .3s", pointerEvents: "none", display: "flex", alignItems: "center", gap: 8, height: 42, padding: "0 16px", borderRadius: 999, background: "var(--text)", color: "#12110F", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", boxShadow: "0 14px 34px rgba(0,0,0,.45)" }}>
         <ICheck />{toast}
       </div>
     </div>

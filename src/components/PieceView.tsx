@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import type { Artwork, FieldDef, ImageDTO, ImageKind, PreviewState, Summary } from "../types";
 import { clamp, KIND_META, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
 import { IArchive, IBack, IDownload, IMore, IPlus, ISpark, IStar, ITag, ITrash, ICheck } from "./Icons";
 import { PreviewTile } from "./PreviewTile";
 import { ROLES } from "./UploadSheet";
+import { fitArt, pieceSplit, slideBox, type Layout } from "../layout";
 
 export interface PendingUpload { tempId: string; artworkId: string; previewUrl: string; kind: ImageKind; role: string; progress: number; error?: string }
 
@@ -21,6 +22,7 @@ interface Props {
   onChanged: () => void;
   onAddImages: (artworkId: string, roleIdx: number) => void;
   toast: (msg: string) => void;
+  layout: Layout;
 }
 
 type Draft = { title: string; yearStart: string; yearEnd: string; circa: boolean; status: string; attrs: Record<string, unknown> };
@@ -53,6 +55,12 @@ export function PieceView(p: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const cg = useRef({ x: 0, y: 0, sc: 1, lock: null as null | "x" | "y", lt: 0, lx: 0, v: 0 });
   const lastId = useRef<string | null>(null);
+  const { landscape } = p.layout;
+  const mediaW = landscape ? pieceSplit(p.layout.w) : 0;
+  const carRef = useRef<HTMLDivElement>(null);
+  const [carBox, setCarBox] = useState({ w: 390, h: 330 });
+  const infoRef = useRef<HTMLDivElement>(null);
+  const lastScroll = useRef({ top: 0, infoTop: 0 });
 
   const load = useCallback(async (aid: string, keepView = false) => {
     try {
@@ -117,6 +125,32 @@ export function PieceView(p: Props) {
     api.get(art.id, "only").then((a) => { if (live) setArchivedImages(a.images); }).catch(() => {});
     return () => { live = false; };
   }, [kind, art, archivedCount]);
+
+  // In landscape the image pane is sized by the screen: measure it for the slides.
+  const hasArt = !!art;
+  useLayoutEffect(() => {
+    const el = carRef.current;
+    if (!landscape || !el) return;
+    const measure = () => setCarBox({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [landscape, hasArt]);
+
+  // Rotating keeps the reader where they were in the details: the images move
+  // in or out of the scroller above them, so shift by the change in their offset.
+  const wasLandscape = useRef(landscape);
+  const recordScroll = () => { const sc = scroller.current, info = infoRef.current; if (sc && info) lastScroll.current = { top: sc.scrollTop, infoTop: info.offsetTop }; };
+  useLayoutEffect(() => {
+    if (wasLandscape.current === landscape) return;
+    wasLandscape.current = landscape;
+    const sc = scroller.current, info = infoRef.current;
+    if (!sc || !info) return;
+    const { top, infoTop } = lastScroll.current;
+    sc.scrollTop = top <= 0 ? 0 : Math.max(0, top - infoTop + info.offsetTop);
+    recordScroll();
+  }, [landscape]);
 
   const pending = p.pending.filter((u) => u.artworkId === art?.id);
   const images = useMemo(() => (art ? (kind === "archived" ? archivedImages : art.images.filter((i) => kind === "all" || i.kind === kind)) : []), [art, kind, archivedImages]);
@@ -265,194 +299,217 @@ export function PieceView(p: Props) {
   const similarItems = similar.map((s) => ({ ...s, a: byId.get(s.id) })).filter((s) => s.a) as { id: string; match: number; a: Summary }[];
   const asp = curImage?.width && curImage?.height ? curImage.width / curImage.height : (art?.cover?.width && art?.cover?.height ? art.cover.width / art.cover.height : 0.8);
 
+  const box = slideBox(landscape, carBox.w, carBox.h);
+  const carouselEl = art && (
+    <div ref={carRef} onPointerDown={cDown} onPointerMove={cMove} onPointerUp={cUp} onPointerCancel={cUp} data-testid="carousel" className="clip"
+      style={{ position: "relative", height: landscape ? "100%" : 330, touchAction: "pan-y" }}>
+      <div style={{ display: "flex", height: "100%", transform: `translateX(calc(${-safeIdx * 100}% + ${cdx}px))`, transition: cDrag ? "none" : "transform .5s var(--ease-out)" }}>
+        {images.map((im) => <Slide box={box} key={im.id} src={im.display} preview={im.preview} aspect={im.width && im.height ? im.width / im.height : asp} label={`${KIND_META[im.kind].short} · ${im.role || KIND_META[im.kind].label}${im.archivedAt ? " · archived" : ""}`} color={KIND_META[im.kind].color} cover={im.id === art.coverImageId} />)}
+        {pend.map((u) => <Slide box={box} key={u.tempId} src={u.previewUrl} aspect={asp} label={`${KIND_META[u.kind].short} · ${u.role}`} color={KIND_META[u.kind].color} progress={u.progress} error={u.error} />)}
+        {kind !== "archived" && <div style={{ flex: "none", width: "100%", height: "100%", display: "grid", placeItems: "center" }}>
+          <button className="press" onClick={() => p.onAddImages(art.id, kind === "all" || kind === "work" ? 4 : ROLES.findIndex((r) => r.kind === kind))} data-testid="add-image-slide"
+            style={{ width: 220, height: 260, borderRadius: 22, border: "2px dashed rgba(243,239,232,.25)", background: "rgba(255,255,255,.02)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--text)" }}>
+            <span style={{ width: 56, height: 56, borderRadius: 99, background: "var(--lupine-deep)", color: "var(--lupine-soft)", display: "grid", placeItems: "center" }}><IPlus size={24} /></span>
+            <span style={{ fontSize: 15, fontWeight: 600 }}>Add images</span>
+            <span style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "0 20px", lineHeight: 1.4 }}>Studies, progress, references, details — originals stay full size</span>
+          </button>
+        </div>}
+      </div>
+      {curImage && (
+        <button className="icon-btn press" aria-label="Image options" onClick={() => setMenu("main")} data-testid="image-menu"
+          style={{ position: "absolute", right: 20, bottom: 12, width: 40, height: 40, background: "rgba(18,17,15,.78)", backdropFilter: "blur(10px)" }}><IMore /></button>
+      )}
+    </div>
+  );
+  const dotsEl = art && (
+    <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "12px 0 4px" }}>
+      {Array.from({ length: slideCount }).map((_, i) => (
+        <button key={i} aria-label={i < shownCount ? `Image ${i + 1}` : "Add images"} onClick={() => setIdx(i)}
+          style={{ width: i === safeIdx ? 22 : 7, height: 7, padding: 0, border: 0, borderRadius: 9, background: i === safeIdx ? "var(--text)" : "rgba(243,239,232,.3)", transition: "width .35s cubic-bezier(.3,1.3,.5,1), background .3s" }} />
+      ))}
+    </div>
+  );
+  const tabsEl = art && (
+    <div className="scroll" style={{ marginTop: landscape ? 2 : 10, overflowX: "auto" }}>
+      <div role="tablist" aria-label="Image type" style={{ display: "flex", gap: 7, padding: "0 20px", width: "max-content" }}>
+        {KIND_TABS.filter((k) => k === "all" || kindCounts[k]).map((k) => (
+          <button key={k} role="tab" aria-selected={kind === k} className="chip press" style={{ height: 36 }} onClick={() => { setKind(k); setIdx(0); }}>
+            {k !== "all" && <span className="dot" style={{ background: KIND_META[k].color, width: 7, height: 7 }} />}{k === "all" ? "All" : KIND_META[k].plural}<span className="n">{kindCounts[k] || 0}</span>
+          </button>
+        ))}
+        {archivedCount > 0 && (
+          <button role="tab" aria-selected={kind === "archived"} className="chip press" style={{ height: 36, borderStyle: "dashed" }} onClick={() => { setKind("archived"); setIdx(0); }} data-testid="archived-images-tab">
+            <IArchive size={13} />Archived<span className="n">{archivedCount}</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+  const infoEl = art && (
+    <>
+      {/* details */}
+      <div style={{ padding: "18px 20px 0" }}>
+        <div className="mono" style={{ fontSize: 11, letterSpacing: ".14em", color: "var(--accent-soft)" }}>NO. {art.catalogId}</div>
+        {art.archivedAt && (
+          <div className="fadein" data-testid="archived-banner"
+            style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, padding: "10px 10px 10px 14px", borderRadius: 16, background: "var(--surface)", border: "1px solid var(--line-2)" }}>
+            <span style={{ color: "var(--muted)", flex: "none" }}><IArchive /></span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="mono" style={{ fontSize: 10.5, letterSpacing: ".12em", color: "var(--text)" }}>ARCHIVED</div>
+              <div style={{ marginTop: 2, fontSize: 13, lineHeight: 1.35, color: "var(--muted)" }}>Hidden from browsing and search. Nothing is deleted.</div>
+            </div>
+            <button className="btn btn-light press" style={{ height: 40, padding: "0 14px", fontSize: 14 }} onClick={() => setPieceArchived(false)} data-testid="unarchive-piece">Unarchive</button>
+          </div>
+        )}
+        {!editing && (
+          <div className="fadein">
+            <h2 className="display" style={{ margin: "6px 0 0", fontSize: 28, lineHeight: 1.08, fontWeight: 700 }}>{art.title || "Untitled"}</h2>
+            <div className="mono" style={{ marginTop: 8, fontSize: 12, letterSpacing: ".08em", color: "var(--muted)", textTransform: "uppercase" }}>
+              {[yearLabel(art), art.attrs.medium as string, art.attrs.dimensions as string].filter(Boolean).join(" · ")}
+            </div>
+            <dl style={{ margin: "20px 0 0", borderTop: "1px solid rgba(255,255,255,.08)" }} data-testid="facts">
+              <Row k="Where it is" v={statusLabel(art.status)} dot={STATUS_COLOR[art.status]} />
+              {p.fields.filter((f) => !f.archived).map((f) => {
+                const v = art.attrs[f.key];
+                const text = blank(v) ? "" : Array.isArray(v) ? v.join(", ") : typeof v === "boolean" ? (v ? "Yes" : "No") : typeof v === "object" ? (v as { year?: number }).year?.toString() || "" : String(v);
+                return <Row key={f.key} k={f.label} v={text || (f.key === "notes" ? "[Add the story behind it]" : "—")} multiline={f.type === "long_text"} faint={!text} />;
+              })}
+              <Row k="Year" v={yearLabel(art)} />
+              <Row k="Images" v={`${art.images.length}`} />
+            </dl>
+            {art.aiDescription && <p style={{ margin: "16px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--muted)" }}><ISpark size={12} /> {art.aiDescription}</p>}
+          </div>
+        )}
+        {editing && draft && (
+          <div className="inup" style={{ display: "flex", flexDirection: "column", gap: 18, marginTop: 10 }} data-testid="edit-form">
+            <div>
+              <label className="lbl" htmlFor="f-title">Title</label>
+              <input id="f-title" className="field display" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="[Title]" style={{ marginTop: 7, fontSize: 19, fontWeight: 700 }} />
+              {issues.title && <div className="field-error">{issues.title}</div>}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "end" }}>
+              <div><label className="lbl" htmlFor="f-ys">Year</label><input id="f-ys" className="field" inputMode="numeric" value={draft.yearStart} onChange={(e) => setDraft({ ...draft, yearStart: e.target.value })} placeholder="1987" style={{ marginTop: 7 }} /></div>
+              <div><label className="lbl" htmlFor="f-ye">To (optional)</label><input id="f-ye" className="field" inputMode="numeric" value={draft.yearEnd} onChange={(e) => setDraft({ ...draft, yearEnd: e.target.value })} placeholder="—" style={{ marginTop: 7 }} /></div>
+              <button className="chip press" aria-pressed={draft.circa} onClick={() => setDraft({ ...draft, circa: !draft.circa })} style={{ height: 46 }}>c.</button>
+            </div>
+            {(issues.yearStart || issues.yearEnd) && <div className="field-error" style={{ marginTop: -10 }}>{issues.yearStart || issues.yearEnd}</div>}
+            <div>
+              <div className="lbl">Where it is</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
+                {p.statuses.map((s) => (
+                  <button key={s.value} className="chip press" aria-pressed={draft.status === s.value} onClick={() => setDraft({ ...draft, status: s.value })}>
+                    <span className="dot" style={{ background: STATUS_COLOR[s.value] }} />{s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {p.fields.filter((f) => !f.archived).map((f) => (
+              <FieldEditor key={f.key} f={f} value={draft.attrs[f.key]} onChange={(v) => setAttr(f.key, v)} error={issues[f.key]} />
+            ))}
+            <div style={{ marginTop: 6, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", gap: 10 }}>
+              <button className="btn btn-ghost press" style={{ width: "100%", height: 48 }} onClick={() => setPieceArchived(!art.archivedAt)} data-testid="archive-piece">
+                <IArchive />{art.archivedAt ? "Unarchive piece" : "Archive piece"}
+              </button>
+              {!art.archivedAt && <div style={{ marginTop: -2, fontSize: 12.5, lineHeight: 1.45, color: "var(--muted)", textAlign: "center" }}>Puts it out of sight, e.g. sample data. Show archived pieces in Filters to bring it back.</div>}
+              {!confirmDelete
+                ? <button className="btn btn-danger press" style={{ width: "100%", height: 48 }} onClick={() => setConfirmDelete(true)}><ITrash />Remove from archive</button>
+                : <div className="inup" style={{ display: "flex", gap: 10 }}>
+                    <button className="btn btn-ghost press" style={{ flex: 1, height: 48 }} onClick={() => setConfirmDelete(false)}>Keep it</button>
+                    <button className="btn press" style={{ flex: 1, height: 48, background: "#C2412D", color: "#fff" }} onClick={removeArtwork} data-testid="confirm-remove">Yes, remove</button>
+                  </div>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* how it came together */}
+      {!editing && (
+        <div style={{ padding: "30px 0 0" }}>
+          <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, padding: "0 20px" }}>
+            <span className="display" style={{ fontSize: 20, fontWeight: 700 }}>How it came together</span>
+            <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap" }}>{journey.length} STEPS · {art.images.length} IMAGES</span>
+          </div>
+          <div className="scroll" style={{ marginTop: 14, overflowX: "auto" }}>
+            <div style={{ position: "relative", display: "flex", gap: 14, padding: "0 20px 4px", width: "max-content" }} data-testid="journey">
+              {journey.length > 1 && <div aria-hidden style={{ position: "absolute", left: 30, right: 130, top: 46, height: 2, background: "linear-gradient(90deg,#A9DDB5,#C9BEFF 35%,#FFD678 65%,#FF9A5C)" }} />}
+              {journey.map((im, j) => {
+                const on = im.id === curImage?.id;
+                return (
+                  <button key={im.id} className="press" aria-label={`Step ${j + 1}, ${KIND_META[im.kind].label}: ${im.role}`}
+                    onClick={() => { setKind("all"); setIdx(art.images.findIndex((x) => x.id === im.id)); scroller.current?.scrollTo({ top: 0, behavior: "smooth" }); }}
+                    style={{ position: "relative", width: 100, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
+                    <div style={{ width: 100, height: 92, borderRadius: 12, overflow: "hidden", background: "#23201C", boxShadow: on ? `0 0 0 2px var(--bg-2),0 0 0 4px ${KIND_META[im.kind].color}` : "0 6px 16px rgba(0,0,0,.35)", transition: "box-shadow .3s" }}>
+                      {im.thumb ? <img src={im.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <div style={{ position: "relative", width: "100%", height: "100%" }}><PreviewTile state={im.preview} compact /></div>}
+                    </div>
+                    <span style={{ position: "absolute", left: 6, top: 6, width: 22, height: 22, borderRadius: 99, background: "rgba(18,17,15,.8)", display: "grid", placeItems: "center", fontFamily: "var(--mono)", fontSize: 10.5, fontWeight: 600 }}>{j + 1}</span>
+                    <span className="mono" style={{ display: "block", marginTop: 9, fontSize: 9.5, letterSpacing: ".12em", color: KIND_META[im.kind].color }}>{KIND_META[im.kind].short}</span>
+                    <span className="clamp2" style={{ marginTop: 3, fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{im.role || KIND_META[im.kind].label}</span>
+                  </button>
+                );
+              })}
+              <button className="press" onClick={() => p.onAddImages(art.id, 0)} data-testid="add-step"
+                style={{ width: 100, height: 92, borderRadius: 12, border: "2px dashed rgba(243,239,232,.22)", background: "var(--bg-2)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, color: "var(--text-2)", fontSize: 12, fontWeight: 600 }}>
+                <IPlus size={18} />Add a step
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* more like this */}
+      {!editing && similarItems.length > 0 && (
+        <div style={{ padding: "30px 0 0" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 20px", color: "var(--lupine-soft)" }}>
+            <ISpark size={15} /><span className="display" style={{ fontSize: 20, fontWeight: 700, color: "var(--text)" }}>More like this</span>
+          </div>
+          <div className="scroll" style={{ marginTop: 12, overflowX: "auto" }}>
+            <div style={{ display: "flex", gap: 12, padding: "0 20px", width: "max-content" }} data-testid="similar">
+              {similarItems.map((s) => (
+                <button key={s.id} className="press" onClick={() => p.onOpen(s.id)} aria-label={`Open ${s.a.title || "Untitled"}, ${pct(s.match)} similar`}
+                  style={{ width: 132, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
+                  <div style={{ position: "relative", width: 132, height: 132, borderRadius: 14, overflow: "hidden", background: "#23201C" }}>
+                    {s.a.thumb ? <img src={s.a.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <PreviewTile state={s.a.preview} compact />}
+                    <span style={{ position: "absolute", left: 7, top: 7, height: 22, padding: "0 7px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(42,37,71,.92)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700 }}>{pct(s.match)}</span>
+                  </div>
+                  <span className="clamp2" style={{ marginTop: 7, fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{s.a.title || "Untitled"}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+
   return (
     <section role="dialog" aria-modal="true" aria-label={art?.title || "Artwork"} data-testid="piece"
       style={{ position: "absolute", inset: 0, zIndex: 20, background: "var(--bg-2)", transform: id ? "none" : "translateX(104%)", transition: "transform .55s cubic-bezier(.2,.9,.25,1)", boxShadow: "-30px 0 60px rgba(0,0,0,.5)" }}>
-      <div ref={scroller} className="scroll" style={{ position: "absolute", inset: 0, overflowY: "auto", overflowX: "hidden" }}>
-        <div style={{ height: "calc(68px + env(safe-area-inset-top))" }} />
-        {!art && !error && <div className="skel" style={{ height: 330, margin: "0 40px", borderRadius: 12 }} />}
+      {/* landscape: the images hold the left of the screen, the details scroll beside them */}
+      {landscape && (
+        <div data-testid="media-pane" style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: mediaW, display: "flex", flexDirection: "column", padding: "max(8px, var(--sat)) 0 max(6px, var(--sab)) var(--sal)", background: "#0E0D0C" }}>
+          {!art && !error && <div className="skel" style={{ flex: 1, margin: "28px 48px", borderRadius: 12 }} />}
+          {art && <div style={{ flex: 1, minHeight: 0 }}>{carouselEl}</div>}
+          {dotsEl}
+        </div>
+      )}
+      <div ref={scroller} className="scroll" onScroll={recordScroll}
+        style={{ position: "absolute", top: 0, bottom: 0, left: landscape ? mediaW : 0, right: 0, paddingRight: landscape ? "var(--sar)" : undefined, overflowY: "auto", overflowX: "hidden" }}>
+        <div style={{ height: `calc(${landscape ? 64 : 68}px + var(--sat))` }} />
+        {!art && !error && !landscape && <div className="skel" style={{ height: 330, margin: "0 40px", borderRadius: 12 }} />}
         {error && <div style={{ padding: 40, textAlign: "center", color: "var(--muted)" }}>{error}<div><button className="btn btn-ghost" style={{ marginTop: 16 }} onClick={() => id && load(id)}>Try again</button></div></div>}
         {art && (
           <>
-            {/* carousel */}
-            <div onPointerDown={cDown} onPointerMove={cMove} onPointerUp={cUp} onPointerCancel={cUp} data-testid="carousel"
-              style={{ position: "relative", height: 330, overflow: "hidden", touchAction: "pan-y" }}>
-              <div style={{ display: "flex", height: "100%", transform: `translateX(calc(${-safeIdx * 100}% + ${cdx}px))`, transition: cDrag ? "none" : "transform .5s var(--ease-out)" }}>
-                {images.map((im) => <Slide key={im.id} src={im.display} preview={im.preview} aspect={im.width && im.height ? im.width / im.height : asp} label={`${KIND_META[im.kind].short} · ${im.role || KIND_META[im.kind].label}${im.archivedAt ? " · archived" : ""}`} color={KIND_META[im.kind].color} cover={im.id === art.coverImageId} />)}
-                {pend.map((u) => <Slide key={u.tempId} src={u.previewUrl} aspect={asp} label={`${KIND_META[u.kind].short} · ${u.role}`} color={KIND_META[u.kind].color} progress={u.progress} error={u.error} />)}
-                {kind !== "archived" && <div style={{ flex: "none", width: "100%", height: "100%", display: "grid", placeItems: "center" }}>
-                  <button className="press" onClick={() => p.onAddImages(art.id, kind === "all" || kind === "work" ? 4 : ROLES.findIndex((r) => r.kind === kind))} data-testid="add-image-slide"
-                    style={{ width: 220, height: 260, borderRadius: 22, border: "2px dashed rgba(243,239,232,.25)", background: "rgba(255,255,255,.02)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--text)" }}>
-                    <span style={{ width: 56, height: 56, borderRadius: 99, background: "var(--lupine-deep)", color: "var(--lupine-soft)", display: "grid", placeItems: "center" }}><IPlus size={24} /></span>
-                    <span style={{ fontSize: 15, fontWeight: 600 }}>Add images</span>
-                    <span style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "0 20px", lineHeight: 1.4 }}>Studies, progress, references, details — originals stay full size</span>
-                  </button>
-                </div>}
-              </div>
-              {curImage && (
-                <button className="icon-btn press" aria-label="Image options" onClick={() => setMenu("main")} data-testid="image-menu"
-                  style={{ position: "absolute", right: 20, bottom: 12, width: 40, height: 40, background: "rgba(18,17,15,.78)", backdropFilter: "blur(10px)" }}><IMore /></button>
-              )}
-            </div>
-            <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "12px 0 4px" }}>
-              {Array.from({ length: slideCount }).map((_, i) => (
-                <button key={i} aria-label={i < shownCount ? `Image ${i + 1}` : "Add images"} onClick={() => setIdx(i)}
-                  style={{ width: i === safeIdx ? 22 : 7, height: 7, padding: 0, border: 0, borderRadius: 9, background: i === safeIdx ? "var(--text)" : "rgba(243,239,232,.3)", transition: "width .35s cubic-bezier(.3,1.3,.5,1), background .3s" }} />
-              ))}
-            </div>
-            <div className="scroll" style={{ marginTop: 10, overflowX: "auto" }}>
-              <div role="tablist" aria-label="Image type" style={{ display: "flex", gap: 7, padding: "0 20px", width: "max-content" }}>
-                {KIND_TABS.filter((k) => k === "all" || kindCounts[k]).map((k) => (
-                  <button key={k} role="tab" aria-selected={kind === k} className="chip press" style={{ height: 36 }} onClick={() => { setKind(k); setIdx(0); }}>
-                    {k !== "all" && <span className="dot" style={{ background: KIND_META[k].color, width: 7, height: 7 }} />}{k === "all" ? "All" : KIND_META[k].plural}<span className="n">{kindCounts[k] || 0}</span>
-                  </button>
-                ))}
-                {archivedCount > 0 && (
-                  <button role="tab" aria-selected={kind === "archived"} className="chip press" style={{ height: 36, borderStyle: "dashed" }} onClick={() => { setKind("archived"); setIdx(0); }} data-testid="archived-images-tab">
-                    <IArchive size={13} />Archived<span className="n">{archivedCount}</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {/* details */}
-            <div style={{ padding: "18px 20px 0" }}>
-              <div className="mono" style={{ fontSize: 11, letterSpacing: ".14em", color: "#FF9A5C" }}>NO. {art.catalogId}</div>
-              {art.archivedAt && (
-                <div className="fadein" data-testid="archived-banner"
-                  style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, padding: "10px 10px 10px 14px", borderRadius: 16, background: "var(--surface)", border: "1px solid var(--line-2)" }}>
-                  <span style={{ color: "var(--muted)", flex: "none" }}><IArchive /></span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div className="mono" style={{ fontSize: 10.5, letterSpacing: ".12em", color: "var(--text)" }}>ARCHIVED</div>
-                    <div style={{ marginTop: 2, fontSize: 13, lineHeight: 1.35, color: "var(--muted)" }}>Hidden from browsing and search. Nothing is deleted.</div>
-                  </div>
-                  <button className="btn btn-light press" style={{ height: 40, padding: "0 14px", fontSize: 14 }} onClick={() => setPieceArchived(false)} data-testid="unarchive-piece">Unarchive</button>
-                </div>
-              )}
-              {!editing && (
-                <div className="fadein">
-                  <h2 className="display" style={{ margin: "6px 0 0", fontSize: 28, lineHeight: 1.08, fontWeight: 700 }}>{art.title || "Untitled"}</h2>
-                  <div className="mono" style={{ marginTop: 8, fontSize: 12, letterSpacing: ".08em", color: "var(--muted)", textTransform: "uppercase" }}>
-                    {[yearLabel(art), art.attrs.medium as string, art.attrs.dimensions as string].filter(Boolean).join(" · ")}
-                  </div>
-                  <dl style={{ margin: "20px 0 0", borderTop: "1px solid rgba(255,255,255,.08)" }} data-testid="facts">
-                    <Row k="Where it is" v={statusLabel(art.status)} dot={STATUS_COLOR[art.status]} />
-                    {p.fields.filter((f) => !f.archived).map((f) => {
-                      const v = art.attrs[f.key];
-                      const text = blank(v) ? "" : Array.isArray(v) ? v.join(", ") : typeof v === "boolean" ? (v ? "Yes" : "No") : typeof v === "object" ? (v as { year?: number }).year?.toString() || "" : String(v);
-                      return <Row key={f.key} k={f.label} v={text || (f.key === "notes" ? "[Add the story behind it]" : "—")} multiline={f.type === "long_text"} faint={!text} />;
-                    })}
-                    <Row k="Year" v={yearLabel(art)} />
-                    <Row k="Images" v={`${art.images.length}`} />
-                  </dl>
-                  {art.aiDescription && <p style={{ margin: "16px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--muted)" }}><ISpark size={12} /> {art.aiDescription}</p>}
-                </div>
-              )}
-              {editing && draft && (
-                <div className="inup" style={{ display: "flex", flexDirection: "column", gap: 18, marginTop: 10 }} data-testid="edit-form">
-                  <div>
-                    <label className="lbl" htmlFor="f-title">Title</label>
-                    <input id="f-title" className="field display" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} placeholder="[Title]" style={{ marginTop: 7, fontSize: 19, fontWeight: 700 }} />
-                    {issues.title && <div className="field-error">{issues.title}</div>}
-                  </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 10, alignItems: "end" }}>
-                    <div><label className="lbl" htmlFor="f-ys">Year</label><input id="f-ys" className="field" inputMode="numeric" value={draft.yearStart} onChange={(e) => setDraft({ ...draft, yearStart: e.target.value })} placeholder="1987" style={{ marginTop: 7 }} /></div>
-                    <div><label className="lbl" htmlFor="f-ye">To (optional)</label><input id="f-ye" className="field" inputMode="numeric" value={draft.yearEnd} onChange={(e) => setDraft({ ...draft, yearEnd: e.target.value })} placeholder="—" style={{ marginTop: 7 }} /></div>
-                    <button className="chip press" aria-pressed={draft.circa} onClick={() => setDraft({ ...draft, circa: !draft.circa })} style={{ height: 46 }}>c.</button>
-                  </div>
-                  {(issues.yearStart || issues.yearEnd) && <div className="field-error" style={{ marginTop: -10 }}>{issues.yearStart || issues.yearEnd}</div>}
-                  <div>
-                    <div className="lbl">Where it is</div>
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
-                      {p.statuses.map((s) => (
-                        <button key={s.value} className="chip press" aria-pressed={draft.status === s.value} onClick={() => setDraft({ ...draft, status: s.value })}>
-                          <span className="dot" style={{ background: STATUS_COLOR[s.value] }} />{s.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                  {p.fields.filter((f) => !f.archived).map((f) => (
-                    <FieldEditor key={f.key} f={f} value={draft.attrs[f.key]} onChange={(v) => setAttr(f.key, v)} error={issues[f.key]} />
-                  ))}
-                  <div style={{ marginTop: 6, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", gap: 10 }}>
-                    <button className="btn btn-ghost press" style={{ width: "100%", height: 48 }} onClick={() => setPieceArchived(!art.archivedAt)} data-testid="archive-piece">
-                      <IArchive />{art.archivedAt ? "Unarchive piece" : "Archive piece"}
-                    </button>
-                    {!art.archivedAt && <div style={{ marginTop: -2, fontSize: 12.5, lineHeight: 1.45, color: "var(--muted)", textAlign: "center" }}>Puts it out of sight, e.g. sample data. Show archived pieces in Filters to bring it back.</div>}
-                    {!confirmDelete
-                      ? <button className="btn btn-danger press" style={{ width: "100%", height: 48 }} onClick={() => setConfirmDelete(true)}><ITrash />Remove from archive</button>
-                      : <div className="inup" style={{ display: "flex", gap: 10 }}>
-                          <button className="btn btn-ghost press" style={{ flex: 1, height: 48 }} onClick={() => setConfirmDelete(false)}>Keep it</button>
-                          <button className="btn press" style={{ flex: 1, height: 48, background: "#C2412D", color: "#fff" }} onClick={removeArtwork} data-testid="confirm-remove">Yes, remove</button>
-                        </div>}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            {/* how it came together */}
-            {!editing && (
-              <div style={{ padding: "30px 0 0" }}>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 10, padding: "0 20px" }}>
-                  <span className="display" style={{ fontSize: 20, fontWeight: 700 }}>How it came together</span>
-                  <span className="mono" style={{ fontSize: 10.5, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap" }}>{journey.length} STEPS · {art.images.length} IMAGES</span>
-                </div>
-                <div className="scroll" style={{ marginTop: 14, overflowX: "auto" }}>
-                  <div style={{ position: "relative", display: "flex", gap: 14, padding: "0 20px 4px", width: "max-content" }} data-testid="journey">
-                    {journey.length > 1 && <div aria-hidden style={{ position: "absolute", left: 30, right: 130, top: 46, height: 2, background: "linear-gradient(90deg,#A9DDB5,#C9BEFF 35%,#FFD678 65%,#FF9A5C)" }} />}
-                    {journey.map((im, j) => {
-                      const on = im.id === curImage?.id;
-                      return (
-                        <button key={im.id} className="press" aria-label={`Step ${j + 1}, ${KIND_META[im.kind].label}: ${im.role}`}
-                          onClick={() => { setKind("all"); setIdx(art.images.findIndex((x) => x.id === im.id)); scroller.current?.scrollTo({ top: 0, behavior: "smooth" }); }}
-                          style={{ position: "relative", width: 100, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
-                          <div style={{ width: 100, height: 92, borderRadius: 12, overflow: "hidden", background: "#23201C", boxShadow: on ? `0 0 0 2px var(--bg-2),0 0 0 4px ${KIND_META[im.kind].color}` : "0 6px 16px rgba(0,0,0,.35)", transition: "box-shadow .3s" }}>
-                            {im.thumb ? <img src={im.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <div style={{ position: "relative", width: "100%", height: "100%" }}><PreviewTile state={im.preview} compact /></div>}
-                          </div>
-                          <span style={{ position: "absolute", left: 6, top: 6, width: 22, height: 22, borderRadius: 99, background: "rgba(18,17,15,.8)", display: "grid", placeItems: "center", fontFamily: "var(--mono)", fontSize: 10.5, fontWeight: 600 }}>{j + 1}</span>
-                          <span className="mono" style={{ display: "block", marginTop: 9, fontSize: 9.5, letterSpacing: ".12em", color: KIND_META[im.kind].color }}>{KIND_META[im.kind].short}</span>
-                          <span className="clamp2" style={{ marginTop: 3, fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{im.role || KIND_META[im.kind].label}</span>
-                        </button>
-                      );
-                    })}
-                    <button className="press" onClick={() => p.onAddImages(art.id, 0)} data-testid="add-step"
-                      style={{ width: 100, height: 92, borderRadius: 12, border: "2px dashed rgba(243,239,232,.22)", background: "var(--bg-2)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6, color: "var(--text-2)", fontSize: 12, fontWeight: 600 }}>
-                      <IPlus size={18} />Add a step
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* more like this */}
-            {!editing && similarItems.length > 0 && (
-              <div style={{ padding: "30px 0 0" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 20px", color: "var(--lupine-soft)" }}>
-                  <ISpark size={15} /><span className="display" style={{ fontSize: 20, fontWeight: 700, color: "var(--text)" }}>More like this</span>
-                </div>
-                <div className="scroll" style={{ marginTop: 12, overflowX: "auto" }}>
-                  <div style={{ display: "flex", gap: 12, padding: "0 20px", width: "max-content" }} data-testid="similar">
-                    {similarItems.map((s) => (
-                      <button key={s.id} className="press" onClick={() => p.onOpen(s.id)} aria-label={`Open ${s.a.title || "Untitled"}, ${pct(s.match)} similar`}
-                        style={{ width: 132, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
-                        <div style={{ position: "relative", width: 132, height: 132, borderRadius: 14, overflow: "hidden", background: "#23201C" }}>
-                          {s.a.thumb ? <img src={s.a.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <PreviewTile state={s.a.preview} compact />}
-                          <span style={{ position: "absolute", left: 7, top: 7, height: 22, padding: "0 7px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(42,37,71,.92)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700 }}>{pct(s.match)}</span>
-                        </div>
-                        <span className="clamp2" style={{ marginTop: 7, fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{s.a.title || "Untitled"}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-            <div style={{ height: "calc(140px + env(safe-area-inset-bottom))" }} />
+            {!landscape && carouselEl}
+            {!landscape && dotsEl}
+            {tabsEl}
+            <div ref={infoRef}>{infoEl}</div>
+            <div style={{ height: `calc(${landscape ? 110 : 140}px + var(--sab))` }} />
           </>
         )}
       </div>
 
       {/* top bar */}
-      <div style={{ position: "absolute", left: 0, right: 0, top: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(14px + env(safe-area-inset-top)) 12px 10px", background: "linear-gradient(180deg,var(--bg-2) 55%,rgba(18,17,15,0))" }}>
+      <div style={{ position: "absolute", left: landscape ? mediaW : 0, right: 0, top: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: landscape ? "calc(10px + var(--sat)) max(12px, var(--sar)) 10px 12px" : "calc(14px + var(--sat)) 12px 10px", background: "linear-gradient(180deg,var(--bg-2) 55%,rgba(18,17,15,0))" }}>
         <button className="icon-btn press" aria-label="Back" onClick={() => { if (editing && changes && !confirm("Discard your changes?")) return; cancelEdit(); p.onClose(); }} data-testid="back"><IBack /></button>
         <span className="mono" style={{ fontSize: 11, letterSpacing: ".12em", color: "var(--muted)" }}>
           {art ? (safeIdx < shownCount ? `${safeIdx + 1} / ${shownCount} ${kind === "all" ? "IMAGES" : kind === "archived" ? "ARCHIVED" : KIND_META[kind].plural.toUpperCase()}` : "ADD IMAGES") : ""}
@@ -464,9 +521,9 @@ export function PieceView(p: Props) {
       </div>
 
       {/* save bar */}
-      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, zIndex: 4, padding: "12px 16px calc(24px + env(safe-area-inset-bottom))", display: "flex", gap: 10, background: "linear-gradient(180deg,rgba(18,17,15,0),var(--bg-2) 32%)", transform: `translateY(${editing ? "0" : "120%"})`, transition: "transform .45s cubic-bezier(.2,.9,.25,1)" }}>
+      <div style={{ position: "absolute", left: landscape ? mediaW : 0, right: 0, bottom: 0, zIndex: 4, padding: landscape ? "12px max(16px, var(--sar)) calc(14px + var(--sab)) 16px" : "12px 16px calc(24px + var(--sab))", display: "flex", gap: 10, background: "linear-gradient(180deg,rgba(18,17,15,0),var(--bg-2) 32%)", transform: `translateY(${editing ? "0" : "120%"})`, transition: "transform .45s cubic-bezier(.2,.9,.25,1)" }}>
         <button className="btn btn-ghost press" style={{ background: "var(--bg-2)" }} onClick={cancelEdit} tabIndex={editing ? 0 : -1}>Cancel</button>
-        <button className="btn press" style={{ flex: 1, background: changes ? "var(--poppy)" : "#8A847A", color: "#1A110A", transition: "background .3s" }} onClick={save} disabled={saving} tabIndex={editing ? 0 : -1} data-testid="save">
+        <button className="btn press" style={{ flex: 1, background: changes ? "var(--accent)" : "#8A847A", color: "var(--on-accent)", transition: "background .3s" }} onClick={save} disabled={saving} tabIndex={editing ? 0 : -1} data-testid="save">
           {saving ? "Saving…" : changes ? `Save ${changes} ${changes === 1 ? "change" : "changes"}` : "Save"}
         </button>
       </div>
@@ -475,8 +532,8 @@ export function PieceView(p: Props) {
       {menu && curImage && art && (
         <>
           <div className="scrim" style={{ opacity: 1, zIndex: 40 }} onClick={() => setMenu(null)} aria-hidden />
-          <div className="inup" role="dialog" aria-label="Image options" data-testid="image-options"
-            style={{ position: "absolute", left: 12, right: 12, bottom: "calc(12px + env(safe-area-inset-bottom))", zIndex: 41, borderRadius: 24, background: "var(--surface)", border: "1px solid var(--line)", padding: 10 }}>
+          <div role="dialog" aria-label="Image options" data-testid="image-options"
+            className="inup scroll" style={{ position: "absolute", left: landscape ? mediaW + 12 : 12, right: landscape ? "max(12px, var(--sar))" : 12, bottom: "calc(12px + var(--sab))", maxHeight: "calc(100% - 24px - var(--sat) - var(--sab))", overflowY: "auto", zIndex: 41, borderRadius: 24, background: "var(--surface)", border: "1px solid var(--line)", padding: 10 }}>
             {menu === "main" && curImage.archivedAt && (
               <>
                 <div style={{ padding: "8px 10px 12px", display: "flex", alignItems: "center", gap: 12 }}>
@@ -549,9 +606,8 @@ function MenuThumb({ im, dim }: { im: ImageDTO; dim?: boolean }) {
   );
 }
 
-function Slide({ src, preview, aspect, label, color, cover, progress, error }: { src: string | null; preview?: PreviewState; aspect: number; label: string; color: string; cover?: boolean; progress?: number; error?: string }) {
-  let w = Math.min(320, 290 * aspect), h = w / aspect;
-  if (h > 290) { h = 290; w = h * aspect; }
+function Slide({ box, src, preview, aspect, label, color, cover, progress, error }: { box: { w: number; h: number }; src: string | null; preview?: PreviewState; aspect: number; label: string; color: string; cover?: boolean; progress?: number; error?: string }) {
+  const { w, h } = fitArt(box.w, box.h, aspect);
   return (
     <div style={{ flex: "none", width: "100%", height: "100%", display: "grid", placeItems: "center", position: "relative" }}>
       <div style={{ position: "relative", width: Math.round(w), height: Math.round(h), borderRadius: 4, overflow: "hidden", background: "#23201C", boxShadow: "0 26px 54px rgba(0,0,0,.6)" }}>
@@ -597,7 +653,7 @@ function FieldEditor({ f, value, onChange, error }: { f: FieldDef; value: unknow
   const [adding, setAdding] = useState(false);
   const [newVal, setNewVal] = useState("");
   const id = `f-${f.key}`;
-  const label = <label className="lbl" htmlFor={id}>{f.label}{f.required && <span style={{ color: "var(--poppy-soft)" }}> · needed</span>}</label>;
+  const label = <label className="lbl" htmlFor={id}>{f.label}{f.required && <span style={{ color: "var(--accent-soft)" }}> · needed</span>}</label>;
   const err = error ? <div className="field-error">{error}</div> : null;
   if (f.type === "select" || f.type === "multi_select") {
     const multi = f.type === "multi_select";
@@ -611,7 +667,7 @@ function FieldEditor({ f, value, onChange, error }: { f: FieldDef; value: unknow
     const add = () => { const v = newVal.trim(); if (v) { if (!sel.includes(v)) toggle(v); } setNewVal(""); setAdding(false); };
     return (
       <div>
-        <div className="lbl" id={id}>{f.label}{f.required && <span style={{ color: "var(--poppy-soft)" }}> · needed</span>}</div>
+        <div className="lbl" id={id}>{f.label}{f.required && <span style={{ color: "var(--accent-soft)" }}> · needed</span>}</div>
         <div role={multi ? "group" : "radiogroup"} aria-labelledby={id} style={{ display: "flex", flexWrap: "wrap", gap: 7, marginTop: 8 }}>
           {choices.map((c) => <button key={c} className="chip press" aria-pressed={sel.includes(c)} onClick={() => toggle(c)} style={{ height: 36 }}>{c}</button>)}
           {f.options.allowNew !== false && !adding && <button className="chip press" onClick={() => setAdding(true)} style={{ height: 36, borderStyle: "dashed" }}><IPlus size={14} />New</button>}

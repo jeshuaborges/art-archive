@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { IClose, ISearch, ISpark, ITimeline, IWall } from "./Icons";
 import { vibrate } from "../util";
+import { landscapeChrome, type Layout } from "../layout";
 
 const SUGGEST = ["warm sunsets over water", "bold graphic shapes", "music and crowds", "golden rolling hills"];
 
@@ -12,10 +13,15 @@ interface Props {
   searching: boolean;
   filterCount: number;
   onOpenFilters: () => void;
+  layout: Layout;
 }
 
-/** One row: Timeline/Wall toggle · expanding search · filters. */
-export function TopBar({ view, onView, q, onQ, searching, filterCount, onOpenFilters }: Props) {
+/**
+ * One row: Timeline/Wall toggle · expanding search · filters. Across the top in
+ * portrait; in landscape a cluster at the top right, over the side panel, so the
+ * art keeps the height.
+ */
+export function TopBar({ view, onView, q, onQ, searching, filterCount, onOpenFilters, layout }: Props) {
   const [openState, setOpen] = useState(false);
   const [focus, setFocus] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -31,9 +37,14 @@ export function TopBar({ view, onView, q, onQ, searching, filterCount, onOpenFil
     onQ(""); setOpen(false); setFocus(false); vibrate(5);
   };
 
+  const place: React.CSSProperties = layout.landscape
+    ? { right: "var(--gr)", width: layout.panel }
+    : { left: "var(--gl)", right: "var(--gr)" };
+  const top = layout.landscape ? landscapeChrome(layout.compact).barTop : 16;
+
   return (
     <>
-      <div style={{ position: "absolute", left: 16, right: 16, top: "calc(16px + env(safe-area-inset-top))", height: 48, zIndex: 6 }} data-testid="topbar">
+      <div style={{ position: "absolute", ...place, top: `calc(${top}px + var(--sat))`, height: 48, zIndex: 6 }} data-testid="topbar">
         {/* view toggle; folds to a single icon while searching */}
         <div role="tablist" aria-label="View" style={{
           position: "absolute", left: 0, top: 0, height: 48, width: open ? 48 : 178, borderRadius: 999, background: "var(--glass)",
@@ -86,22 +97,22 @@ export function TopBar({ view, onView, q, onQ, searching, filterCount, onOpenFil
 
         {/* filters */}
         <button className="press" onClick={onOpenFilters} aria-label={`Filters${filterCount ? `, ${filterCount} active` : ""}`}
-          style={{ position: "absolute", right: 0, top: 0, width: 48, height: 48, borderRadius: 24, border: `1px solid ${filterCount ? "rgba(255,138,76,.55)" : "var(--line)"}`,
-            background: filterCount ? "rgba(255,138,76,.16)" : "var(--glass)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
-            display: "grid", placeItems: "center", color: filterCount ? "var(--poppy-soft)" : "var(--text)", transition: "background .35s, border-color .35s, color .35s" }}>
+          style={{ position: "absolute", right: 0, top: 0, width: 48, height: 48, borderRadius: 24, border: `1px solid ${filterCount ? "rgba(var(--accent-rgb), .55)" : "var(--line)"}`,
+            background: filterCount ? "rgba(var(--accent-rgb), .16)" : "var(--glass)", backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+            display: "grid", placeItems: "center", color: filterCount ? "var(--accent-soft)" : "var(--text)", transition: "background .35s, border-color .35s, color .35s" }}>
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.1} strokeLinecap="round" aria-hidden>
             <path d="M4 7h16M4 17h16" opacity=".55" />
             <circle cx="9" cy="7" r="2.6" fill={filterCount ? "#3A2519" : "#1E1C19"} style={{ transform: `translateX(${filterCount ? 6 : 0}px)`, transition: "transform .55s cubic-bezier(.3,1.6,.5,1)" }} />
             <circle cx="15" cy="17" r="2.6" fill={filterCount ? "#3A2519" : "#1E1C19"} style={{ transform: `translateX(${filterCount ? -6 : 0}px)`, transition: "transform .55s .05s cubic-bezier(.3,1.6,.5,1)" }} />
           </svg>
           {filterCount > 0 && (
-            <span className="popin" style={{ position: "absolute", top: -4, right: -4, minWidth: 20, height: 20, padding: "0 5px", borderRadius: 99, background: "var(--poppy)", color: "#1A110A", fontSize: 11, fontWeight: 700, display: "grid", placeItems: "center", border: "2px solid var(--bg)" }}>{filterCount}</span>
+            <span className="popin" style={{ position: "absolute", top: -4, right: -4, minWidth: 20, height: 20, padding: "0 5px", borderRadius: 99, background: "var(--accent)", color: "var(--on-accent)", fontSize: 11, fontWeight: 700, display: "grid", placeItems: "center", border: "2px solid var(--bg)" }}>{filterCount}</span>
           )}
         </button>
       </div>
 
       {focus && !q.trim() && (
-        <div className="dropin" role="dialog" aria-label="Search suggestions" style={{ position: "absolute", left: 16, right: 16, top: "calc(72px + env(safe-area-inset-top))", zIndex: 7, padding: 14, borderRadius: 18, background: "var(--surface-2)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 24px 50px rgba(0,0,0,.55)" }}>
+        <div className="dropin" role="dialog" aria-label="Search suggestions" style={{ position: "absolute", ...place, top: `calc(${top + 56}px + var(--sat))`, zIndex: 7, padding: 14, borderRadius: 18, background: "var(--surface-2)", border: "1px solid rgba(255,255,255,.08)", boxShadow: "0 24px 50px rgba(0,0,0,.55)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--lupine-soft)" }}><ISpark size={13} />Searches by meaning, not just titles</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12 }}>
             {SUGGEST.map((t, i) => (

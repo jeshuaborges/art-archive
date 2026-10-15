@@ -142,7 +142,7 @@ function YearRange({ bounds, value, onChange }: { bounds: [number, number]; valu
       </div>
       <div ref={track} style={{ position: "relative", height: 44, margin: "10px 12px 0" }}>
         <div style={{ position: "absolute", left: 0, right: 0, top: 20, height: 4, borderRadius: 9, background: "#34312C" }} />
-        <div style={{ position: "absolute", top: 20, height: 4, borderRadius: 9, background: "var(--poppy)", left: `${pos(value[0])}%`, width: `${pos(value[1]) - pos(value[0])}%` }} />
+        <div style={{ position: "absolute", top: 20, height: 4, borderRadius: 9, background: "var(--accent)", left: `${pos(value[0])}%`, width: `${pos(value[1]) - pos(value[0])}%` }} />
         {thumb(0)}{thumb(1)}
       </div>
     </div>

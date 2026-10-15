@@ -2,11 +2,27 @@
 
 A phone-first archive for fifty years of Anne Laddon's work: every original, its studies, progress shots and reference photos, with the details that go with them. It runs as one Cloudflare Worker.
 
+## Status (October 2026)
+
+- **Live** at https://art-archive.irving-family.workers.dev, on the Irving Family Cloudflare account, behind Cloudflare Access (family policy, 30-day sessions). Install it on a phone with Share → Add to Home Screen.
+- **Data:** the live archive has no real pieces yet. `1999-001` "MCP test piece (sample data)" is archived; see it under Filters → Only archived.
+- **Verified in production over MCP:**
+  - URL uploads, with server-made previews (WebP display, thumb, size, palette).
+  - Originals stored in Infrequent Access and previews in Standard.
+  - All Workflow steps (preview, describe, refresh text, embed, upsert).
+  - Search by meaning.
+  - Archiving and unarchiving images and pieces, including the cover handover.
+- **Verified locally only:**
+  - The landscape layouts and the lavender accent, in a desktop browser at phone and tablet sizes.
+  - The full-screen fix for the home-screen app, which has not yet been tried on a real iPhone.
+  - Re-describing when the cover changes, checked with fakes and database tests (there is no vision model locally).
+
 ## What it does
 
 - **Timeline**: scrub through the years on a draggable filmstrip, or jump to a decade. Swipe the hero image to step through pieces, and tap it to open the piece.
 - **Wall**: a two-column masonry grouped by decade, with sticky headers and a decade rail for jumping.
 - **One top row**: the Timeline/Wall toggle, an expanding search field, and filters.
+- **Either way up**: on a phone held sideways (or a tablet or desktop) the timeline puts the painting large on the left with the filmstrip under it and the label, decade jumps and Add work beside it; the wall grows to 3–6 columns; a piece shows its images on the left and details on the right. Rotating keeps your place. It fills the screen edge to edge from the home screen, with controls kept clear of the notch and home indicator.
 - **Search by meaning**: try "warm sunsets over water". Results combine semantic vectors with full-text matching and show a match percentage.
 - **Filters**: medium, subjects, style, series (any field marked filterable), where the piece is, color (from each image's palette), a year range, and whether to show archived pieces (hide / show too / only). Active filters appear as removable chips.
 - **Piece view**:
@@ -36,7 +52,9 @@ A phone-first archive for fifty years of Anne Laddon's work: every original, its
 | Search | Production: Workers AI embeddings (`bge-base-en-v1.5`) in Vectorize, plus D1 FTS5. Local: an offline embedding model stored in D1, plus FTS5. Keyword search sees a change at once; search by meaning once indexing finishes |
 | Indexing | Cloudflare Workflow `ArtworkIndexer` (`worker/indexer.ts`): missing previews, vision description, embedding and Vectorize upsert as retried steps after the request returns. FTS5 and `record.json` are written inline. Local dev runs the same steps inline |
 | Descriptions | Production: a Workers AI vision model describes the main image's display preview (never the original), as a Workflow step, and `ai_description_image_id` records which image it described. When a different finished work becomes the main image (chosen, or after the old one is archived or removed), it is described again; a description someone typed or edited (no image id) is never replaced. If it keeps failing, the piece is indexed without one. Local: built from palette and fields |
-| Login | **Cloudflare Access.** The app has no auth code; it verifies the Access JWT and reads the email |
+| Layout | `src/layout.ts` (pure sizing: orientation, hero box, filmstrip spacing, wall columns) and `src/viewport.ts` (follows resize and rotation). The app sets `data-layout` (portrait/landscape) and `data-compact` on the shell, so CSS and JS agree. Landscape means wider than tall and at least 560px wide; compact means 500px tall or less. The shell is `position: fixed` on all four edges, with `100vh` in home-screen mode (`html.standalone`). Safe-area variables (`--sat/--sab/--sal/--sar`, gutters `--gl/--gr`) keep controls clear of the notch and home indicator in both orientations |
+| Theme | Tokens in `src/styles.css` `:root`. Highlights (focus ring, primary buttons, selection, filter badge, playhead, catalog numbers) use `--accent`, `--accent-soft`, `--accent-rgb` and `--on-accent`, currently pointed at lupine lavender; change those four lines to re-theme. Status colours (`STATUS_COLOR`) and image-kind colours (`KIND_META`, e.g. Finished orange, Study lavender) are category palettes and stay separate |
+| Login | **Cloudflare Access.** The app has no auth code; it verifies the Access JWT and reads the email. MCP clients sign in through Access Managed OAuth (see below) |
 | Backups | Cron trigger → `backups/YYYY-MM-DD.json` in R2 |
 
 ## Run it locally
@@ -55,8 +73,8 @@ The sample works use real titles from anneladdon.com, but the images are generat
 
 ```bash
 npm run typecheck
-npm run test:unit    # fields, Access JWT verification, embeddings, palette, indexing steps and order, archive decisions, storage classes and previews, production search backend (fakes), MCP tool arguments
-npm run test:api     # 43 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
+npm run test:unit    # layout (orientation, hero, filmstrip and wall sizing), fields, Access JWT verification, embeddings, palette, indexing steps and order, archive decisions, storage classes and previews, production search backend (fakes), MCP tool arguments
+npm run test:api     # 45 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
 npm run test:e2e     # 21 browser steps in Chromium at 390×844 with touch, on a freshly seeded archive
 npm test             # all of the above
 ```
@@ -67,10 +85,11 @@ The end-to-end run saves a screenshot for every step in `tests/shots/`. It needs
 
 1. **Create the resources:**
    ```bash
-   npx wrangler d1 create anne-archive            # put the id in wrangler.jsonc → d1_databases[0].database_id
-   npx wrangler r2 bucket create anne-archive-images
-   npx wrangler vectorize create anne-archive-artworks --dimensions=768 --metric=cosine
+   npx wrangler d1 create art-archive             # put the id in wrangler.jsonc → d1_databases[0].database_id
+   npx wrangler r2 bucket create art-archive-images
+   npx wrangler vectorize create art-archive-artworks --dimensions=768 --metric=cosine
    ```
+   These already exist on the Irving Family account (`account_id` in `wrangler.jsonc`). The `art-archive-indexer` Workflow is created by `wrangler deploy`.
 2. **Put Cloudflare Access in front of it.** In Zero Trust → Access → Applications, add a self-hosted application for the Worker's domain, with a policy allowing the family's email addresses (one-time PIN or Google login). Set the session duration to as long as one month so her phone stays signed in.
 3. **Tell the Worker about Access** so it verifies the JWT and can't be reached around Access, for example via `workers.dev`. In `wrangler.jsonc` → `vars`:
    - `ACCESS_TEAM_DOMAIN`, e.g. `yourteam.cloudflareaccess.com`
@@ -78,7 +97,8 @@ The end-to-end run saves a screenshot for every step in `tests/shots/`. It needs
 
    If these are empty in production, every API request returns 401. The Worker fails closed.
 4. **Cloudflare Images** must be available on the account: `wrangler.jsonc` binds it as `"images": { "binding": "IMAGES" }`. It makes previews only for uploads that arrive without them; each is billed as a [unique transformation](https://developers.cloudflare.com/images/pricing/) (three per such image: display, thumb and a tiny palette sample). It reads at most 20 MB and doesn't read TIFF (or AVIF below Enterprise); those images show "No preview for this file" and can still be downloaded.
-5. **Deploy:** `npm run deploy`. This builds, applies remote migrations, and runs `wrangler deploy`.
+5. **Deploy:** `npm run deploy`. This builds, applies remote migrations (`0001`–`0004`), and runs `wrangler deploy`. Set `CLOUDFLARE_ACCOUNT_ID=9962565b22f960c8f86eb6597a4bd559` if your login can see several accounts. If the migration step fails with code 7403, run `npx wrangler d1 migrations apply DB --remote --env=""` and then `npx wrangler deploy --env=""` separately; this happened once and didn't recur.
+6. **MCP sign-in:** turn on **Managed OAuth** for the Access application (Advanced settings), with dynamic client registration allowing `https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback` and localhost/loopback. This is already done for the live app.
 
 ### Storage classes
 
@@ -97,7 +117,7 @@ No secrets are required: uploads go through the R2 binding, so there are no R2 A
 
 ## Data model
 
-- `artworks`: catalog number (`YEAR-NNN` or `undated-NNN`, fixed at creation), title, year range, circa, status, `attrs` JSON, palette, AI description, cover image, version, `archived_at`/`archived_by` (migration 0003).
+- `artworks`: catalog number (`YEAR-NNN` or `undated-NNN`, fixed at creation), title, year range, circa, status, `attrs` JSON, palette, AI description and `ai_description_image_id` (the image it was generated from; null means a person wrote it; migration 0004), cover image, version, `archived_at`/`archived_by` (migration 0003).
 - `field_defs`: the schema for `attrs`. Add fields with `POST /api/fields`; the edit form and filters pick them up automatically.
 - `images`: kind (`work`, `progress`, `study`, `reference`), label, R2 keys for the original/display/thumb (display/thumb are null until a preview exists; the API then reports `preview: "pending"` or `"unavailable"`), SHA-256 for duplicate detection, size, palette, `archived_at`/`archived_by`.
 - `artwork_revisions`: a full snapshot on every change, with who made it.
@@ -122,4 +142,8 @@ No secrets are required: uploads go through the R2 binding, so there are no R2 A
 - **HEIC photos.** Browsers that can't decode HEIC upload the original without phone-made previews. In production, Cloudflare Images makes them in the indexing Workflow, usually within a minute; the piece shows "Preview being made" until then (it checks back a few times) and its main image is described once the preview exists. Locally there is no Images binding, so they stay pending. Originals over 20 MB, TIFF and AVIF get no server preview ("No preview for this file"); download the original instead. A preview that keeps failing stays pending: `scripts/originals-to-ia.mjs --previews` retries it.
 - **Studies.** They are images attached to a finished piece. If one study fed several paintings, make studies their own records linked to each work.
 - **MCP sign-in.** The Access application has **Managed OAuth** turned on, so Access itself is the OAuth server for `/mcp`. MCP clients get a `401` that points to Access's discovery metadata, and they sign in with the same family policy. The Worker needs no OAuth code: Access passes the usual `Cf-Access-Jwt-Assertion` header after resolving the token. Dynamic client registration allows the claude.ai/claude.com callbacks and any localhost or loopback redirect. Tokens last 1h, and the OAuth session lasts 720h. Connect with `claude mcp add --transport http art-archive https://art-archive.irving-family.workers.dev/mcp`, or add the URL as a custom connector in claude.ai.
+- **MCP tool list.** The server says its tool list never changes (`listChanged: false`), so clients keep the list they first saw. After adding or changing tools, reconnect the connector to see them.
 - **Search quality.** The local embedding model is a small offline stand-in. Production search quality comes from Workers AI embeddings.
+- **Not yet checked on a real iPhone:** the safe areas and full-screen fix in the home-screen app, in both orientations. The browser can't simulate iOS safe areas.
+- **Large tablets in landscape.** At 1366×1024 the timeline painting fills only part of the left column; it could grow.
+- **End-to-end tests** need Python Playwright with Chromium, which isn't installed on the dev machine, and they cover portrait only.
