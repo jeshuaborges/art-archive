@@ -61,6 +61,21 @@ describe("reading JPEG headers", () => {
   });
 });
 
+describe("JPEGs with megabytes of maker data", () => {
+  it("skips past them within the shell's read budget", async () => {
+    const { HEAD_BYTES, MAX_READS } = await import("../../worker/techmeta");
+    const app = (n: number) => { const b = new Uint8Array(4 + n); b.set([0xff, 0xea, (n + 2) >> 8, (n + 2) & 255]); return b; };
+    const parts = [new Uint8Array([0xff, 0xd8]), ...Array.from({ length: 40 }, () => app(61464)),
+      new Uint8Array([0xff, 0xc0, 0, 17, 8, 0x0b, 0xb8, 0x0f, 0xa0, 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1]), new Uint8Array([0xff, 0xda, 0, 2])];
+    const file = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+    let o = 0; for (const p of parts) { file.set(p, o); o += p.length; }
+    const chunks = [{ offset: 0, bytes: file.subarray(0, HEAD_BYTES) }];
+    let r = readTech("image/jpeg", chunks, file.length), reads = 0;
+    while ("need" in r && reads < MAX_READS) { chunks.push({ offset: r.need.offset, bytes: file.subarray(r.need.offset, r.need.offset + r.need.length) }); reads++; r = readTech("image/jpeg", chunks, file.length); }
+    expect(r).toMatchObject({ tech: { width: 4000, height: 3000 } });
+  });
+});
+
 describe("small pieces", () => {
   it("reads EXIF dates and resolutions", () => {
     expect(exifDate("2012:06:01 19:16:11")).toBe("2012-06-01T19:16:11");

@@ -17,7 +17,7 @@ import {
   archivedIdFilter, archivedWhere, archivePatch, bulkIdsSchema, countArchived, coverAfterHiding, coverAfterRestoring, isShown, selectImages,
   shownIds, tallyBulk, uniqueIds, vectorTopK, type ArchivedMode, type BulkOutcome, type CoverDecision,
 } from "./archive";
-import { HEAD_BYTES, readTech, type Chunk, type Tech } from "./techmeta";
+import { HEAD_BYTES, MAX_READS, readTech, type Chunk, type Tech } from "./techmeta";
 import { assessPrint, bestOf, fixityMatches, fixityState, FIXITY_DAYS, GRADE_ORDER, parsePhysicalSize, type Inches, type PrintGrade } from "./printready";
 
 export interface Env extends EmbedEnv {
@@ -520,7 +520,7 @@ export async function readAssetTech(env: Env, imageId: string): Promise<{ read: 
   const size = head.size;
   const chunks: Chunk[] = [{ offset: 0, bytes: new Uint8Array(await head.arrayBuffer()) }];
   let tech: Tech | null = null;
-  for (let i = 0; i < 6 && !tech; i++) {
+  for (let i = 0; i < MAX_READS && !tech; i++) {
     let res;
     try { res = readTech(r.content_type, chunks, size); }
     catch (e) { console.warn(`couldn't read headers of ${r.r2_key}`, e); break; }

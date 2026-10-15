@@ -36,7 +36,10 @@ export type TechRead = { tech: Tech } | { need: Range };
 
 /** How much of the head the shell reads first, and the least it reads after that. */
 export const HEAD_BYTES = 512 * 1024;
-export const MIN_READ = 64 * 1024;
+// generous: some cameras put megabytes of maker data ahead of a JPEG's frame header (Nikon's APP10 blocks)
+export const MIN_READ = 1024 * 1024;
+/** How many follow-up reads the shell may make for one file. */
+export const MAX_READS = 12;
 
 class Need { constructor(public range: Range) {} }
 
