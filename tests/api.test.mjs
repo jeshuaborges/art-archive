@@ -5,10 +5,14 @@
 import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
+import { execFileSync } from "node:child_process";
 
 const BASE = process.env.API_BASE || "http://localhost:8788";
 const NOAUTH = process.env.NOAUTH_BASE || "http://localhost:8789";
 const ACCESS = process.env.ACCESS_BASE || "http://localhost:8790";
+/** The servers' local state (tests/run-api.sh passes it): lets a test set what only production could write. */
+const STATE = process.env.API_STATE;
+const sqlLocal = (command) => execFileSync("npx", ["wrangler", "d1", "execute", "DB", "--local", "--env", "dev", "--persist-to", STATE, "--command", command], { stdio: "pipe" });
 
 async function j(path, init = {}, base = BASE) {
   const r = await fetch(base + path, { ...init, headers: { ...(init.body && !(init.body instanceof FormData) ? { "content-type": "application/json" } : {}), ...init.headers } });
@@ -501,6 +505,52 @@ describe("archive", () => {
     const r = await j("/api/artworks/unarchive", { method: "POST", body: JSON.stringify({ ids: [one.id, two.id] }) });
     assert.deepEqual(r.body.changed, [one.id, two.id]);
     assert.ok((await searchIds("quokka sample")).includes(two.id));
+  });
+});
+
+describe("description provenance", () => {
+  let p, front, detail;
+  const get = async () => (await j(`/api/artworks/${p.id}`)).body;
+  const patch = async (body) => j(`/api/artworks/${p.id}`, { method: "PATCH", body: JSON.stringify({ version: (await get()).version, ...body }) });
+  before(async () => {
+    p = (await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Provenance piece" }) })).body;
+    front = (await upload(p.id, await jpeg({ r: 120, g: 110, b: 100 }), { kind: "work", role: "Front" })).body.image;
+    detail = (await upload(p.id, await jpeg({ r: 40, g: 120, b: 160 }), { kind: "work", role: "Detail" })).body.image;
+  });
+  test("a description typed when adding a piece is a person's: credited to no image", async () => {
+    const t = (await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Typed", aiDescription: "In my own words." }) })).body;
+    assert.equal(t.aiDescription, "In my own words.");
+    assert.equal(t.aiDescriptionImageId, null);
+    assert.equal((await get()).aiDescriptionImageId, null, "dev has no vision model: nothing written");
+  });
+  test("a machine description survives cover changes in dev (no vision model) and other edits; a person's edit takes it over", { skip: !STATE && "needs API_STATE (tests/run-api.sh)" }, async () => {
+    sqlLocal(`UPDATE artworks SET ai_description = 'A mountain road.', ai_description_image_id = '${front.id}' WHERE id = '${p.id}'`);
+    assert.equal((await get()).aiDescriptionImageId, front.id);
+    const g = await j("/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_artwork", arguments: { id: p.id } } }) });
+    assert.equal(JSON.parse(g.body.result.content[0].text).aiDescriptionImageId, front.id);
+    // the cover moves on: the indexing that would re-describe it runs, but dev can't describe, so the text stays as it was
+    const r = await j(`/api/images/${front.id}/archive`, { method: "POST" });
+    assert.equal(r.body.coverImageId, detail.id);
+    assert.equal(r.body.aiDescription, "A mountain road.");
+    assert.equal(r.body.aiDescriptionImageId, front.id);
+    await j(`/api/images/${front.id}/unarchive`, { method: "POST" });
+    // editing anything else, or sending the description back unchanged, keeps where it came from
+    assert.equal((await patch({ title: "Provenance piece (renamed)" })).body.aiDescriptionImageId, front.id);
+    assert.equal((await patch({ aiDescription: "A mountain road." })).body.aiDescriptionImageId, front.id);
+    const mine = await patch({ aiDescription: "A river valley at dusk." });
+    assert.equal(mine.status, 200);
+    assert.equal(mine.body.aiDescription, "A river valley at dusk.");
+    assert.equal(mine.body.aiDescriptionImageId, null);
+    // a person's description stays through a cover change
+    const c = await j(`/api/images/${front.id}`, { method: "PATCH", body: JSON.stringify({ makeCover: true }) });
+    assert.equal(c.body.coverImageId, front.id);
+    assert.equal(c.body.aiDescription, "A river valley at dusk.");
+    assert.equal(c.body.aiDescriptionImageId, null);
+    // cleared: empty, credited to nothing, so the next main image is described
+    sqlLocal(`UPDATE artworks SET ai_description_image_id = '${front.id}' WHERE id = '${p.id}'`);
+    const cleared = await patch({ aiDescription: null });
+    assert.equal(cleared.body.aiDescription, null);
+    assert.equal(cleared.body.aiDescriptionImageId, null);
   });
 });
 

@@ -5,8 +5,9 @@ import { z } from "zod";
 import { applyAttrsPatch, loadFieldDefs, type Attrs, type FieldDef, type FieldIssue } from "./fields";
 import { vectorBackend, type EmbedEnv } from "./embed";
 import {
-  DEFAULT_VISION_MODEL, describePrompt, embedText, ftsRow, inlineStep, parseVisionOutput, runIndexing, shouldDescribe, sidecarKey, sidecarRecord,
-  startIndexing, upsertDecision, type IndexOps, type IndexParams, type PreviewOutcome, type TierOutcome,
+  coverDescribeParams, DEFAULT_VISION_MODEL, descriptionImageIdAfterEdit, describePrompt, describeWrite, embedText, ftsRow, inlineStep, parseVisionOutput,
+  runIndexing, shouldDescribe, sidecarKey, sidecarRecord, startIndexing, upsertDecision, type DescriptionRow, type IndexOps, type IndexParams,
+  type PreviewOutcome, type TierOutcome,
 } from "./indexing";
 import {
   describeSource, needsPreview, orientedSize, PALETTE_SAMPLE, paletteFromRgb, previewKey, previewPlan, previewState, previewTransform,
@@ -44,7 +45,7 @@ export class HttpError extends Error {
 
 interface ArtworkRow {
   id: string; catalog_id: string; title: string; year_start: number | null; year_end: number | null; circa: number;
-  status: string; attrs: string; palette: string; ai_description: string | null; cover_image_id: string | null;
+  status: string; attrs: string; palette: string; ai_description: string | null; ai_description_image_id: string | null; cover_image_id: string | null;
   version: number; created_at: string; updated_at: string; deleted_at: string | null;
   archived_at: string | null; archived_by: string | null;
 }
@@ -92,7 +93,7 @@ export function artworkDTO(a: ArtworkRow, rows: ImageRow[], images: ArchivedMode
   return {
     id: a.id, catalogId: a.catalog_id, title: a.title, yearStart: a.year_start, yearEnd: a.year_end, circa: a.circa === 1,
     status: a.status, attrs: JSON.parse(a.attrs) as Attrs, palette: JSON.parse(a.palette) as string[],
-    aiDescription: a.ai_description, coverImageId: cover ? cover.id : null, version: a.version,
+    aiDescription: a.ai_description, aiDescriptionImageId: a.ai_description_image_id, coverImageId: cover ? cover.id : null, version: a.version,
     createdAt: a.created_at, updatedAt: a.updated_at, archivedAt: a.archived_at, archivedBy: a.archived_by,
     images: imgs, cover, archivedImageCount: archivedCount,
   };
@@ -226,19 +227,22 @@ export function indexOps(env: Env, artworkId: string): IndexOps {
   return {
     preview: (imageId) => makePreviews(env, artworkId, imageId),
     tierOriginal: (imageId) => tierOriginal(env, imageId),
-    async describe(key) {
+    async describe(key, imageId) {
       // only ever a display preview: never the original (large, and in Infrequent Access)
       if (!describeSource(key)) return false;
       const visionReady = env.EMBEDDINGS === "workers-ai" && !!env.AI;
-      const row = await env.DB.prepare("SELECT ai_description, deleted_at FROM artworks WHERE id = ?").bind(artworkId).first<{ ai_description: string | null; deleted_at: string | null }>();
-      if (!shouldDescribe({ describeKey: key, visionReady, row }) || !env.AI) return false;
+      const row = await env.DB.prepare("SELECT ai_description, ai_description_image_id, cover_image_id, deleted_at FROM artworks WHERE id = ?").bind(artworkId).first<DescriptionRow>();
+      if (!row || !shouldDescribe({ describeKey: key, imageId, visionReady, row }) || !env.AI) return false;
       const obj = await env.BUCKET.get(key);
       if (!obj) return false;
       const out = await env.AI.run((env.VISION_MODEL || DEFAULT_VISION_MODEL) as never, { image: [...new Uint8Array(await obj.arrayBuffer())], prompt: describePrompt(), max_tokens: 160 } as never);
       const text = parseVisionOutput(out);
       if (!text) throw new Error("vision model returned no description");
-      // only fills an empty description: never overwrites one typed in meanwhile
-      const r = await env.DB.prepare("UPDATE artworks SET ai_description = ? WHERE id = ? AND deleted_at IS NULL AND (ai_description IS NULL OR trim(ai_description) = '')").bind(text, artworkId).run();
+      // only if nothing moved on while the model ran: a description typed meanwhile, or a newer main image, wins
+      const w = describeWrite(row, imageId, text);
+      const r = await env.DB.prepare(`UPDATE artworks SET ai_description = ?1, ai_description_image_id = ?2 WHERE id = ?3 AND deleted_at IS NULL
+                                      AND cover_image_id IS ?4 AND ai_description IS ?5 AND ai_description_image_id IS ?6`)
+        .bind(w.set.aiDescription, w.set.imageId, artworkId, w.expect.coverImageId, w.expect.aiDescription, w.expect.imageId).run();
       return r.meta.changes > 0;
     },
     async refreshText() {
@@ -312,9 +316,10 @@ export async function updateArtwork(env: Env, id: string, input: unknown, by: st
   if (ye != null && ys == null) throw new HttpError(422, "Invalid update", [{ key: "yearEnd", message: "Add a start year first" }]);
   if (ys != null && ye != null && ye < ys) throw new HttpError(422, "Invalid update", [{ key: "yearEnd", message: "End year must be on or after start year" }]);
   const r = await env.DB.prepare(`UPDATE artworks SET title = ?, year_start = ?, year_end = ?, circa = ?, status = ?, attrs = ?, ai_description = ?,
-                                   version = version + 1, updated_at = ? WHERE id = ? AND version = ?`)
+                                   ai_description_image_id = ?, version = version + 1, updated_at = ? WHERE id = ? AND version = ?`)
     .bind(v.title !== undefined ? v.title : cur.title, ys ?? null, ye ?? null, (v.circa !== undefined ? v.circa : cur.circa) ? 1 : 0,
-      v.status || cur.status, JSON.stringify(res.attrs), v.aiDescription !== undefined ? v.aiDescription : cur.aiDescription, now(), cur.id, v.version).run();
+      v.status || cur.status, JSON.stringify(res.attrs), v.aiDescription !== undefined ? v.aiDescription : cur.aiDescription,
+      descriptionImageIdAfterEdit(cur, v.aiDescription), now(), cur.id, v.version).run();
   if (!r.meta.changes) throw new HttpError(409, "This piece was changed somewhere else. Reload to see the latest version.");
   await addNewChoices(env.DB, defs, res.newChoices);
   const a = await reindex(env, cur.id);
@@ -456,6 +461,7 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   const makePreview = needsPreview({ display_key: displayKey, thumb_key: thumbKey }) && serverPreviewable({ contentType: sniffed.type, bytes: original.size });
   const order = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM images WHERE artwork_id = ? AND kind = ?").bind(a.id, meta.kind).first<{ n: number }>();
   const id = crypto.randomUUID();
+  const before = await coverRow(env, a.id);
   await env.DB.prepare(`INSERT INTO images (id, artwork_id, kind, role, r2_key, display_key, thumb_key, sha256, content_type, bytes, width, height, palette, caption, taken_on, sort_order, uploaded_by)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .bind(id, a.id, meta.kind, meta.role, origKey, displayKey, thumbKey, sha, sniffed.type, original.size,
@@ -463,10 +469,9 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   const becomesCover = meta.makeCover || (!a.coverImageId && meta.kind === "work") || (!a.cover);
   if (becomesCover) await setCover(env, a.id, id, meta.palette);
   else await env.DB.prepare("UPDATE artworks SET updated_at = ? WHERE id = ?").bind(now(), a.id).run();
-  const describe = becomesCover && meta.kind === "work";
   await reindex(env, a.id, {
     ...(makePreview ? { previewImageId: id } : {}),
-    ...(describe && displayKey ? { describeKey: displayKey } : describe && makePreview ? { describePreview: true } : {}),
+    ...(becomesCover ? coverDescribeParams(before, await coverRow(env, a.id)) : {}),
   });
   const row = await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first<ImageRow>();
   return { image: imageDTO(row!), duplicate: false };
@@ -577,6 +582,11 @@ async function applyCover(env: Env, artworkId: string, d: CoverDecision) {
   else await env.DB.prepare("UPDATE artworks SET updated_at = ? WHERE id = ?").bind(now(), artworkId).run();
 }
 
+/** The piece's main image as recorded (null if none), for deciding whether a change of it needs a new description. */
+async function coverRow(env: Env, artworkId: string): Promise<ImageRow | null> {
+  return env.DB.prepare("SELECT i.* FROM artworks a JOIN images i ON i.id = a.cover_image_id WHERE a.id = ?").bind(artworkId).first<ImageRow>();
+}
+
 /** The cover and the (not removed) images a cover decision looks at. */
 async function coverState(env: Env, artworkId: string) {
   const [a, imgs] = await Promise.all([
@@ -610,21 +620,24 @@ export async function updateImage(env: Env, imageId: string, input: unknown) {
   if (!img) throw new HttpError(404, "Image not found");
   const v = p.data;
   if (v.makeCover && img.archived_at) throw new HttpError(422, "Unarchive this image before making it the main image", [{ key: "makeCover", message: "This image is archived" }]);
+  const before = await coverRow(env, img.artwork_id);
   await env.DB.prepare("UPDATE images SET kind = ?, role = ?, caption = ?, taken_on = ? WHERE id = ?")
     .bind(v.kind ?? img.kind, v.role ?? img.role, v.caption !== undefined ? v.caption : img.caption, v.takenOn !== undefined ? v.takenOn : img.taken_on, img.id).run();
   if (v.makeCover) await setCover(env, img.artwork_id, img.id);
-  await reindex(env, img.artwork_id);
+  // a new main finished work (made the cover, or the cover relabelled a work) is described afresh
+  await reindex(env, img.artwork_id, coverDescribeParams(before, await coverRow(env, img.artwork_id)));
   return getArtwork(env, img.artwork_id);
 }
 
 export async function deleteImage(env: Env, imageId: string) {
   const img = await env.DB.prepare("SELECT * FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<ImageRow>();
   if (!img) throw new HttpError(404, "Image not found");
+  const before = await coverRow(env, img.artwork_id);
   await env.DB.prepare("UPDATE images SET deleted_at = ? WHERE id = ?").bind(now(), img.id).run();
   const { coverId, rows } = await coverState(env, img.artwork_id);
   const d = coverAfterHiding(coverId, img.id, rows);
   if (d.kind !== "keep") await applyCover(env, img.artwork_id, d);
-  return reindex(env, img.artwork_id);
+  return reindex(env, img.artwork_id, coverDescribeParams(before, await coverRow(env, img.artwork_id)));
 }
 
 /**
@@ -635,12 +648,13 @@ export async function deleteImage(env: Env, imageId: string) {
 export async function setImageArchived(env: Env, imageId: string, archived: boolean, by: string) {
   const img = await env.DB.prepare("SELECT * FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<ImageRow>();
   if (!img) throw new HttpError(404, "Image not found");
+  const before = await coverRow(env, img.artwork_id);
   const p = archivePatch(archived, now(), by);
   const r = await env.DB.prepare(`UPDATE images SET archived_at = ?, archived_by = ? WHERE id = ? AND ${p.guard}`).bind(p.archivedAt, p.archivedBy, img.id).run();
   if (!r.meta.changes) return getArtwork(env, img.artwork_id);
   const { coverId, rows } = await coverState(env, img.artwork_id);
   await applyCover(env, img.artwork_id, archived ? coverAfterHiding(coverId, img.id, rows) : coverAfterRestoring(coverId, rows));
-  return reindex(env, img.artwork_id);
+  return reindex(env, img.artwork_id, coverDescribeParams(before, await coverRow(env, img.artwork_id)));
 }
 
 // ----------------------------------------------------------- search

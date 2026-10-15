@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  describeKeyFor, embedText, ftsRow, inlineStep, parseVisionOutput, runIndexing, shouldDescribe, sidecarKey, sidecarRecord, startIndexing, upsertDecision,
-  type DoStep, type Embedded, type IndexOps, type PreviewOutcome, type TierOutcome, type UpsertOutcome,
+  coverDescribeParams, describeKeyFor, descriptionImageIdAfterEdit, descriptionOrigin, describeWrite, embedText, ftsRow, inlineStep, parseVisionOutput,
+  runIndexing, shouldDescribe, sidecarKey, sidecarRecord, startIndexing, upsertDecision, type CoverFacts, type DescriptionRow, type DoStep, type Embedded, type IndexOps, type PreviewOutcome, type TierOutcome, type UpsertOutcome,
 } from "../../worker/indexing";
 import { parseFieldDef } from "../../worker/fields";
 import { indexOps, type ArtworkDTO, type Env } from "../../worker/store";
@@ -12,7 +12,7 @@ const defs = [
 ];
 const art = (o: Partial<ArtworkDTO> = {}): ArtworkDTO => ({
   id: "a1", catalogId: "2020-001", title: "Soda Lake", yearStart: 2021, yearEnd: null, circa: false, status: "sold",
-  attrs: { medium: "Oil", location: "Hallway" }, palette: ["#7B3A8E", "#E0A030"], aiDescription: null, coverImageId: null, version: 3,
+  attrs: { medium: "Oil", location: "Hallway" }, palette: ["#7B3A8E", "#E0A030"], aiDescription: null, aiDescriptionImageId: null, coverImageId: null, version: 3,
   createdAt: "2026-01-01", updatedAt: "2026-01-02", archivedAt: null, archivedBy: null, images: [], cover: null, archivedImageCount: 0, ...o,
 });
 
@@ -56,15 +56,60 @@ describe("indexing text builders", () => {
 });
 
 describe("vision decisions", () => {
-  const row = { ai_description: null, deleted_at: null };
-  it("describes only with a key, Workers AI, a live piece and no description yet", () => {
-    expect(shouldDescribe({ describeKey: "k", visionReady: true, row })).toBe(true);
-    expect(shouldDescribe({ describeKey: undefined, visionReady: true, row })).toBe(false);
-    expect(shouldDescribe({ describeKey: "k", visionReady: false, row })).toBe(false);
-    expect(shouldDescribe({ describeKey: "k", visionReady: true, row: null })).toBe(false);
-    expect(shouldDescribe({ describeKey: "k", visionReady: true, row: { ...row, deleted_at: "2026" } })).toBe(false);
-    expect(shouldDescribe({ describeKey: "k", visionReady: true, row: { ...row, ai_description: "Typed by hand" } })).toBe(false);
-    expect(shouldDescribe({ describeKey: "k", visionReady: true, row: { ...row, ai_description: "  " } })).toBe(true);
+  const row: DescriptionRow = { ai_description: null, ai_description_image_id: null, cover_image_id: "i2", deleted_at: null };
+  const machine = (imageId: string): DescriptionRow => ({ ...row, ai_description: "A mountain road.", ai_description_image_id: imageId });
+  const human: DescriptionRow = { ...row, ai_description: "Typed by hand", ai_description_image_id: null };
+  const go = (r: DescriptionRow | null, o: { describeKey?: string; imageId?: string | null; visionReady?: boolean } = {}) =>
+    shouldDescribe({ describeKey: "k", imageId: "i2", visionReady: true, row: r, ...o });
+  it("needs a key, Workers AI and a live piece", () => {
+    expect(go(row)).toBe(true);
+    expect(go(row, { describeKey: undefined })).toBe(false);
+    expect(go(row, { visionReady: false })).toBe(false);
+    expect(go(null)).toBe(false);
+    expect(go({ ...row, deleted_at: "2026" })).toBe(false);
+  });
+  it("describes an empty description, or a machine one written for another image", () => {
+    expect(go(row)).toBe(true);
+    expect(go({ ...row, ai_description: "  " })).toBe(true);
+    expect(go({ ...row, ai_description: "  ", ai_description_image_id: "i1" })).toBe(true);
+    expect(go(machine("i1"))).toBe(true);
+  });
+  it("never re-describes the same image, and never replaces a person's description", () => {
+    expect(go(machine("i2"))).toBe(false);
+    expect(go(human)).toBe(false);
+  });
+  it("skips an image that is no longer the main image by the time the step runs", () => {
+    expect(go({ ...row, cover_image_id: "i3" })).toBe(false);
+    expect(go({ ...machine("i1"), cover_image_id: "i3" })).toBe(false);
+    expect(go({ ...row, cover_image_id: null })).toBe(false);
+  });
+  it("without an image id (older params) fills only an empty description", () => {
+    expect(go(row, { imageId: undefined })).toBe(true);
+    expect(go({ ...row, cover_image_id: "other" }, { imageId: null })).toBe(true);
+    expect(go(machine("i1"), { imageId: undefined })).toBe(false);
+    expect(go(human, { imageId: null })).toBe(false);
+  });
+  it("reads a description's origin", () => {
+    expect(descriptionOrigin(row)).toEqual({ kind: "empty" });
+    expect(descriptionOrigin({ ai_description: " ", ai_description_image_id: "i1" })).toEqual({ kind: "empty" });
+    expect(descriptionOrigin(machine("i1"))).toEqual({ kind: "machine", imageId: "i1" });
+    expect(descriptionOrigin(human)).toEqual({ kind: "human" });
+  });
+  it("credits a write to the image described (or the cover) and guards on the row as read", () => {
+    expect(describeWrite(machine("i1"), "i2", "A river valley.")).toEqual({
+      set: { aiDescription: "A river valley.", imageId: "i2" },
+      expect: { coverImageId: "i2", aiDescription: "A mountain road.", imageId: "i1" },
+    });
+    expect(describeWrite(row, null, "A lake.").set).toEqual({ aiDescription: "A lake.", imageId: "i2" });
+  });
+  it("an edit makes the description a person's; leaving it alone or unchanged keeps its origin", () => {
+    const cur = { aiDescription: "A mountain road.", aiDescriptionImageId: "i1" };
+    expect(descriptionImageIdAfterEdit(cur, undefined)).toBe("i1");
+    expect(descriptionImageIdAfterEdit(cur, "A mountain road.")).toBe("i1");
+    expect(descriptionImageIdAfterEdit(cur, "My own words.")).toBeNull();
+    expect(descriptionImageIdAfterEdit(cur, "")).toBeNull();
+    expect(descriptionImageIdAfterEdit(cur, null)).toBeNull();
+    expect(descriptionImageIdAfterEdit({ aiDescription: null, aiDescriptionImageId: null }, null)).toBeNull();
   });
   it("parses either output shape, trims and caps it, and treats silence as null", () => {
     expect(parseVisionOutput({ description: "  A lake.  " })).toBe("A lake.");
@@ -90,7 +135,7 @@ function fakeOps(o: Partial<Record<keyof IndexOps, () => unknown>> = {}) {
   const ops: IndexOps = {
     preview: async (id) => { calls.push(`preview:${id}`); return (o.preview ? o.preview() : made("artworks/x/k-display.webp")) as PreviewOutcome; },
     tierOriginal: async (id) => { calls.push(`tier:${id}`); return (o.tierOriginal ? o.tierOriginal() : "moved") as TierOutcome; },
-    describe: async (key) => { calls.push(`describe:${key}`); return (o.describe ? o.describe() : true) as boolean; },
+    describe: async (key, imageId) => { calls.push(`describe:${key}${imageId ? `@${imageId}` : ""}`); return (o.describe ? o.describe() : true) as boolean; },
     refreshText: async () => { calls.push("refreshText"); return true; },
     embed: async () => { calls.push("embed"); return (o.embed ? o.embed() : vec) as Embedded | null; },
     upsert: async (e) => { calls.push(`upsert:${e.vec.length}`); return (o.upsert ? o.upsert() : "upserted") as UpsertOutcome; },
@@ -113,6 +158,11 @@ describe("runIndexing", () => {
     expect(steps.map((s) => s.name)).toEqual(["describe", "refresh-text", "embed", "upsert"]);
     expect(steps.every((s) => (s.limit ?? 0) > 0)).toBe(true);
     expect(r).toEqual({ artworkId: "a1", preview: null, tiered: null, described: true, outcome: "upserted" });
+  });
+  it("hands the describe step the image it describes", async () => {
+    const { ops, calls } = fakeOps();
+    await runIndexing({ artworkId: "a1", describeKey: "artworks/x/k-display.jpg", describeImageId: "i2" }, ops, inlineStep);
+    expect(calls[0]).toBe("describe:artworks/x/k-display.jpg@i2");
   });
   it("makes missing previews first, then describes the new display preview", async () => {
     const { ops, calls } = fakeOps({ preview: () => made("artworks/x/k-display.webp", true) });
@@ -176,6 +226,28 @@ describe("runIndexing", () => {
   });
 });
 
+describe("coverDescribeParams", () => {
+  const work = (o: Partial<CoverFacts> = {}): CoverFacts => ({ id: "i2", kind: "work", display_key: "artworks/x/b-display.jpg", content_type: "image/jpeg", bytes: 1000, ...o });
+  it("a new main finished work is described from its display preview", () => {
+    expect(coverDescribeParams({ id: "i1", kind: "work" }, work())).toEqual({ describeKey: "artworks/x/b-display.jpg", describeImageId: "i2" });
+    expect(coverDescribeParams(null, work())).toEqual({ describeKey: "artworks/x/b-display.jpg", describeImageId: "i2" });
+  });
+  it("or once the server has made its preview", () => {
+    expect(coverDescribeParams({ id: "i1", kind: "work" }, work({ display_key: null, content_type: "image/heic" })))
+      .toEqual({ previewImageId: "i2", describePreview: true, describeImageId: "i2" });
+  });
+  it("the cover relabelled a finished work counts as a new one", () => {
+    expect(coverDescribeParams({ id: "i2", kind: "study" }, work())).toEqual({ describeKey: "artworks/x/b-display.jpg", describeImageId: "i2" });
+  });
+  it("leaves the description alone for the same cover, no cover, a non-work, or no preview to come", () => {
+    expect(coverDescribeParams({ id: "i2", kind: "work" }, work())).toEqual({});
+    expect(coverDescribeParams({ id: "i1", kind: "work" }, null)).toEqual({});
+    expect(coverDescribeParams({ id: "i1", kind: "work" }, work({ kind: "study" }))).toEqual({});
+    expect(coverDescribeParams({ id: "i1", kind: "work" }, work({ display_key: null, content_type: "image/tiff" }))).toEqual({});
+    expect(coverDescribeParams({ id: "i1", kind: "work" }, work({ display_key: null, bytes: 50 * 1024 * 1024 }))).toEqual({});
+  });
+});
+
 describe("describeKeyFor", () => {
   it("only ever hands the vision step a display preview", () => {
     expect(describeKeyFor({ artworkId: "a1", describeKey: "artworks/x/k-display.jpg" }, null)).toBe("artworks/x/k-display.jpg");
@@ -210,13 +282,13 @@ describe("startIndexing", () => {
 });
 
 // ----------------------------------------------------------- the describe step against fakes
-function describeEnv(o: { row?: { ai_description: string | null; deleted_at: string | null } | null; out?: unknown; object?: boolean; embeddings?: string } = {}) {
+function describeEnv(o: { row?: DescriptionRow | null; out?: unknown; object?: boolean; embeddings?: string } = {}) {
   const sql: { q: string; args: unknown[] }[] = [];
   const ai: unknown[] = [];
   const DB = {
     prepare: (q: string) => ({
       bind: (...args: unknown[]) => ({
-        first: async () => { sql.push({ q, args }); return o.row === undefined ? { ai_description: null, deleted_at: null } : o.row; },
+        first: async () => { sql.push({ q, args }); return o.row === undefined ? { ai_description: null, ai_description_image_id: null, cover_image_id: "i2", deleted_at: null } : o.row; },
         run: async () => { sql.push({ q, args }); return { meta: { changes: 1 } }; },
       }),
     }),
@@ -228,29 +300,40 @@ function describeEnv(o: { row?: { ai_description: string | null; deleted_at: str
 }
 
 describe("describe step", () => {
-  it("writes a fresh description from the image, only into an empty field", async () => {
+  const key = "artworks/x/k-display.jpg";
+  it("writes a fresh description from the image, credited to it, guarded on the row as read", async () => {
     const { env, sql, ai } = describeEnv();
-    expect(await indexOps(env, "a1").describe("artworks/x/k-display.jpg")).toBe(true);
+    expect(await indexOps(env, "a1").describe(key, "i2")).toBe(true);
     expect(ai).toEqual([{ model: "@cf/test/vision", input: expect.objectContaining({ image: [1, 2, 3], max_tokens: 160 }) }]);
     const upd = sql.find((s) => s.q.startsWith("UPDATE"))!;
-    expect(upd.args).toEqual(["A lake at dusk.", "a1"]);
-    expect(upd.q).toMatch(/ai_description IS NULL/);
+    expect(upd.args).toEqual(["A lake at dusk.", "i2", "a1", "i2", null, null]);
+    expect(upd.q).toMatch(/ai_description_image_id = \?2/);
+    expect(upd.q).toMatch(/cover_image_id IS \?4 AND ai_description IS \?5 AND ai_description_image_id IS \?6/);
   });
-  it("does nothing offline, over an existing description, or without the image", async () => {
-    for (const o of [{ embeddings: "local" }, { row: { ai_description: "Mine", deleted_at: null } }, { row: null }, { object: false }]) {
+  it("replaces a machine description written for the previous main image", async () => {
+    const { env, sql } = describeEnv({ row: { ai_description: "A mountain road.", ai_description_image_id: "i1", cover_image_id: "i2", deleted_at: null } });
+    expect(await indexOps(env, "a1").describe(key, "i2")).toBe(true);
+    expect(sql.find((s) => s.q.startsWith("UPDATE"))!.args).toEqual(["A lake at dusk.", "i2", "a1", "i2", "A mountain road.", "i1"]);
+  });
+  it("does nothing offline, over a person's description, for a cover that moved on, or without the image", async () => {
+    const live = { ai_description: null, ai_description_image_id: null, deleted_at: null };
+    for (const o of [
+      { embeddings: "local" }, { row: { ...live, ai_description: "Mine", cover_image_id: "i2" } }, { row: { ...live, cover_image_id: "i3" } },
+      { row: { ...live, ai_description: "Same", ai_description_image_id: "i2", cover_image_id: "i2" } }, { row: null }, { object: false },
+    ]) {
       const { env, ai, sql } = describeEnv(o);
-      expect(await indexOps(env, "a1").describe("artworks/x/k-display.jpg")).toBe(false);
+      expect(await indexOps(env, "a1").describe(key, "i2")).toBe(false);
       expect(ai).toEqual([]);
       expect(sql.some((s) => s.q.startsWith("UPDATE"))).toBe(false);
     }
   });
   it("throws on an empty answer so the step retries", async () => {
     const { env } = describeEnv({ out: { response: "" } });
-    await expect(indexOps(env, "a1").describe("artworks/x/k-display.jpg")).rejects.toThrow(/no description/);
+    await expect(indexOps(env, "a1").describe(key, "i2")).rejects.toThrow(/no description/);
   });
   it("never reads an original, whatever key it is handed", async () => {
     const { env, ai, sql } = describeEnv();
-    expect(await indexOps(env, "a1").describe("artworks/x/k.heic")).toBe(false);
+    expect(await indexOps(env, "a1").describe("artworks/x/k.heic", "i2")).toBe(false);
     expect(ai).toEqual([]);
     expect(sql).toEqual([]);
   });

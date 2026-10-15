@@ -20,4 +20,4 @@ npx wrangler dev --env dev --port 8789 --persist-to "$STATE" --var ALLOW_DEV_AUT
 P2=$!; up 8789
 npx wrangler dev --env dev --port 8790 --persist-to "$STATE" --var ACCESS_TEAM_DOMAIN:family.cloudflareaccess.com --var ACCESS_AUD:test-aud --inspector-port 9232 >/tmp/api-8790.log 2>&1 &
 P3=$!; up 8790
-node --test --test-concurrency=1 tests/api.test.mjs
+API_STATE="$STATE" node --test --test-concurrency=1 tests/api.test.mjs

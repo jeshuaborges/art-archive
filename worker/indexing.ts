@@ -12,17 +12,21 @@
 import type { WorkflowStepConfig } from "cloudflare:workers";
 import { colorName } from "./embed";
 import { formatValue, searchText, type FieldDef } from "./fields";
-import { describeSource } from "./media";
+import { describeSource, serverPreviewable } from "./media";
 import type { ArtworkDTO } from "./store";
 
 /**
  * `describeKey`: a display preview to describe. `previewImageId`: an image whose
  * previews the server must make first; with `describePreview`, its new display
- * preview is then described (it is the piece's new main image). `tierOriginalImageId`:
- * move that image's original (uploaded before originals went to Infrequent
- * Access) to Infrequent Access; only scripts/originals-to-ia.mjs asks for it.
+ * preview is then described (it is the piece's new main image). `describeImageId`:
+ * the image either of those belongs to (the main image the description will be
+ * credited to). `tierOriginalImageId`: move that image's original (uploaded
+ * before originals went to Infrequent Access) to Infrequent Access; only
+ * scripts/originals-to-ia.mjs asks for it.
  */
-export interface IndexParams { artworkId: string; describeKey?: string; previewImageId?: string; describePreview?: boolean; tierOriginalImageId?: string }
+export interface IndexParams {
+  artworkId: string; describeKey?: string; previewImageId?: string; describePreview?: boolean; describeImageId?: string; tierOriginalImageId?: string;
+}
 
 // ----------------------------------------------------------- text builders
 export function describeLocally(a: ArtworkDTO): string {
@@ -79,9 +83,72 @@ export function sidecarRecord(a: ArtworkDTO, defs: FieldDef[], statusLabels: Rec
 export const DEFAULT_VISION_MODEL = "@cf/llava-hf/llava-1.5-7b-hf";
 export const describePrompt = () => "Describe this artwork for a search index in two sentences: subject, setting, colors, mood and style.";
 
-/** Production only (Workers AI configured), and never over an existing description or a removed piece. */
-export function shouldDescribe(o: { describeKey?: string; visionReady: boolean; row: { ai_description: string | null; deleted_at: string | null } | null }): boolean {
-  return !!o.describeKey && o.visionReady && !!o.row && !o.row.deleted_at && !o.row.ai_description?.trim();
+// A description's provenance is ai_description_image_id: the image the vision
+// model described. Non-null: machine-made, replaced when the main image changes.
+// Null with text: a person wrote it, never replaced automatically. No text: none yet.
+export interface DescriptionRow {
+  ai_description: string | null; ai_description_image_id: string | null; cover_image_id: string | null; deleted_at: string | null;
+}
+export type DescriptionOrigin = { kind: "empty" } | { kind: "machine"; imageId: string } | { kind: "human" };
+
+export function descriptionOrigin(r: Pick<DescriptionRow, "ai_description" | "ai_description_image_id">): DescriptionOrigin {
+  if (!r.ai_description?.trim()) return { kind: "empty" };
+  return r.ai_description_image_id ? { kind: "machine", imageId: r.ai_description_image_id } : { kind: "human" };
+}
+
+/**
+ * Production only (Workers AI configured), for a live piece whose main image is
+ * still `imageId` (a later cover change schedules its own description), and only
+ * over no description or a machine one written for a different image: never over
+ * a person's. Without `imageId` (params from before provenance was recorded),
+ * only an empty description is filled.
+ */
+export function shouldDescribe(o: { describeKey?: string; imageId?: string | null; visionReady: boolean; row: DescriptionRow | null }): boolean {
+  if (!o.describeKey || !o.visionReady || !o.row || o.row.deleted_at) return false;
+  if (o.imageId && o.row.cover_image_id !== o.imageId) return false;
+  const origin = descriptionOrigin(o.row);
+  if (origin.kind === "empty") return true;
+  return origin.kind === "machine" && !!o.imageId && origin.imageId !== o.imageId;
+}
+
+/**
+ * The guarded write of a new description: credited to the image described (or,
+ * without one, the cover), and only if the row is exactly as `shouldDescribe`
+ * saw it, so an edit or cover change made while the model ran wins.
+ */
+export function describeWrite(row: DescriptionRow, imageId: string | null | undefined, text: string) {
+  return {
+    set: { aiDescription: text, imageId: imageId || row.cover_image_id },
+    expect: { coverImageId: row.cover_image_id, aiDescription: row.ai_description, imageId: row.ai_description_image_id },
+  };
+}
+
+/**
+ * Provenance after an edit through updateArtwork: a changed description (or one
+ * cleared) is a person's, so it is no longer credited to an image; leaving it
+ * out, or sending it back unchanged, keeps what it was. A cleared one is
+ * described again the next time the main image changes.
+ */
+export function descriptionImageIdAfterEdit(cur: { aiDescription: string | null; aiDescriptionImageId: string | null }, next: string | null | undefined): string | null {
+  if (next === undefined || (next ?? "").trim() === (cur.aiDescription ?? "").trim()) return cur.aiDescriptionImageId;
+  return null;
+}
+
+/** What the describe decisions need to know about a piece's main image. */
+export interface CoverFacts { id: string; kind: string; display_key: string | null; content_type: string; bytes: number }
+
+/**
+ * The indexing params a change of main image calls for. A finished work ("work")
+ * that wasn't the main finished work before is described: from its display
+ * preview, or once the server has made it. Anything else (no cover, the same one,
+ * a study, a file with no preview to come) leaves the description as it is.
+ */
+export function coverDescribeParams(before: Pick<CoverFacts, "id" | "kind"> | null, after: CoverFacts | null): Omit<IndexParams, "artworkId"> {
+  if (!after || after.kind !== "work") return {};
+  if (before && before.id === after.id && before.kind === "work") return {};
+  if (describeSource(after.display_key)) return { describeKey: after.display_key!, describeImageId: after.id };
+  if (serverPreviewable({ contentType: after.content_type, bytes: after.bytes })) return { previewImageId: after.id, describePreview: true, describeImageId: after.id };
+  return {};
 }
 
 /** The vision model's answer as a description, or null when it said nothing. */
@@ -113,8 +180,8 @@ export interface IndexOps {
   preview(imageId: string): Promise<PreviewOutcome>;
   /** Rewrite the image's original in Infrequent Access, unless it already is. Throws to retry. */
   tierOriginal(imageId: string): Promise<TierOutcome>;
-  /** Write ai_description from the vision model; true if one was written. Throws to retry. */
-  describe(key: string): Promise<boolean>;
+  /** Write ai_description from the vision model, credited to `imageId`; true if one was written. Throws to retry. */
+  describe(key: string, imageId: string | null): Promise<boolean>;
   /** Re-sync FTS and record.json; false if the piece is gone. */
   refreshText(): Promise<boolean>;
   /** The embedding of the current text, or null if the piece is gone. */
@@ -166,7 +233,8 @@ export async function runIndexing(params: IndexParams, ops: IndexOps, doStep: Do
   const key = describeKeyFor(params, preview);
   if (key) {
     // A missing description must not block search: give up on it and carry on.
-    try { described = await doStep("describe", STEPS.describe, () => ops.describe(key)); }
+    const imageId = params.describeImageId ?? null;
+    try { described = await doStep("describe", STEPS.describe, () => ops.describe(key, imageId)); }
     catch (e) { console.warn("vision description failed", params.artworkId, e); }
   }
   // FTS and record.json include the description and palette, so refresh them once either changes.
