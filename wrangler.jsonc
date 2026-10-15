@@ -39,6 +39,10 @@
   "ai": { "binding": "AI" },
   // Created with: npx wrangler vectorize create art-archive-artworks --dimensions=768 --metric=cosine
   "vectorize": [{ "binding": "VECTORIZE", "index_name": "art-archive-artworks" }],
+  // Background indexing after each change (worker/indexer.ts): vision description,
+  // embedding and Vectorize upsert as retried steps. Not inherited by named envs,
+  // so `dev` has no INDEXER and runs the same steps inline.
+  "workflows": [{ "name": "art-archive-indexer", "binding": "INDEXER", "class_name": "ArtworkIndexer" }],
 
   "env": {
     // ------------------------------------------------------------- local dev

@@ -2,12 +2,18 @@
  * Data access and mutations, shared by the HTTP API and the MCP endpoint.
  */
 import { z } from "zod";
-import { applyAttrsPatch, loadFieldDefs, searchText, formatValue, type Attrs, type FieldDef, type FieldIssue } from "./fields";
-import { vectorBackend, colorName, type EmbedEnv } from "./embed";
+import { applyAttrsPatch, loadFieldDefs, type Attrs, type FieldDef, type FieldIssue } from "./fields";
+import { vectorBackend, type EmbedEnv } from "./embed";
+import {
+  DEFAULT_VISION_MODEL, describePrompt, embedText, ftsRow, inlineStep, parseVisionOutput, runIndexing, shouldDescribe, sidecarKey, sidecarRecord,
+  startIndexing, upsertDecision, type IndexOps, type IndexParams,
+} from "./indexing";
 
 export interface Env extends EmbedEnv {
   BUCKET: R2Bucket;
   ASSETS: Fetcher;
+  /** The ArtworkIndexer Workflow (production). Absent in local dev, where indexing runs inline. */
+  INDEXER?: Workflow<IndexParams>;
   VISION_MODEL?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
@@ -132,55 +138,88 @@ async function writeRevision(env: Env, a: ArtworkDTO, by: string) {
     .bind(a.id, a.version, JSON.stringify(snapshot(a)), by).run();
 }
 
-export function describeLocally(a: ArtworkDTO): string {
-  const colors = [...new Set(a.palette.map(colorName))].filter((c) => c !== "gray");
-  const parts: string[] = [];
-  const medium = a.attrs.medium as string | undefined;
-  parts.push(`${medium ? medium : "A work"}${a.yearStart ? ` from the ${Math.floor(a.yearStart / 10) * 10}s` : ""}`);
-  if (colors.length) parts.push(`palette of ${colors.join(", ")}`);
-  const subjects = a.attrs.subjects as string[] | undefined;
-  if (subjects?.length) parts.push(`subjects: ${subjects.join(", ").toLowerCase()}`);
-  return parts.join("; ") + ".";
+// ----------------------------------------------------------- indexing (shell)
+// Inline with each mutation: the FTS row and record.json (cheap, so keyword search
+// and the sidecar are right immediately). In the background (ArtworkIndexer
+// Workflow, or inline in local dev): vision description, embedding, vector upsert.
+
+/** The artwork, or null once it is removed. */
+async function liveArtwork(env: Env, id: string): Promise<ArtworkDTO | null> {
+  try { return await getArtwork(env, id); }
+  catch (e) { if (e instanceof HttpError && e.status === 404) return null; throw e; }
 }
 
-export function embedText(a: ArtworkDTO, defs: FieldDef[]): string {
-  const colors = [...new Set(a.palette.map(colorName))];
-  const decade = a.yearStart ? `${Math.floor(a.yearStart / 10) * 10}s` : "";
-  return [a.title, searchText(defs.filter((d) => d.key !== "location" && d.key !== "dimensions"), a.attrs), a.aiDescription || describeLocally(a), colors.length ? "colors " + colors.join(" ") : "", decade]
-    .filter(Boolean).join("\n");
-}
-
-export async function reindex(env: Env, id: string, defs?: FieldDef[]) {
-  const a = await getArtwork(env, id);
-  defs = defs || (await loadFieldDefs(env.DB));
+async function writeText(env: Env, a: ArtworkDTO, defs: FieldDef[]) {
+  const r = ftsRow(a, defs);
+  // Guarded insert in the same transaction as the delete, so a late refresh can't
+  // put a removed piece back into keyword search.
   await env.DB.batch([
     env.DB.prepare("DELETE FROM artworks_fts WHERE artwork_id = ?").bind(a.id),
-    env.DB.prepare("INSERT INTO artworks_fts (artwork_id, catalog_id, title, attrs_text, ai_description) VALUES (?, ?, ?, ?, ?)")
-      .bind(a.id, a.catalogId, a.title, searchText(defs, a.attrs), a.aiDescription || describeLocally(a)),
+    env.DB.prepare(`INSERT INTO artworks_fts (artwork_id, catalog_id, title, attrs_text, ai_description)
+                    SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM artworks WHERE id = ?1 AND deleted_at IS NULL)`)
+      .bind(r.artwork_id, r.catalog_id, r.title, r.attrs_text, r.ai_description),
   ]);
-  const vb = vectorBackend(env);
-  const [vec] = await vb.embed([embedText(a, defs)]);
-  await vb.upsert(a.id, vec);
-  await writeSidecar(env, a, defs);
+  await env.BUCKET.put(sidecarKey(a), JSON.stringify(sidecarRecord(a, defs, STATUS_LABELS), null, 2), { httpMetadata: { contentType: "application/json" } });
+}
+
+/** FTS row + record.json for an artwork, now. */
+export async function syncText(env: Env, id: string): Promise<ArtworkDTO> {
+  const a = await getArtwork(env, id);
+  await writeText(env, a, await loadFieldDefs(env.DB));
   return a;
 }
 
-export async function writeSidecar(env: Env, a: ArtworkDTO, defs: FieldDef[]) {
-  const byKey = new Map(defs.map((d) => [d.key, d]));
-  const record = {
-    format: "anne-laddon-archive-record/v1",
-    catalogId: a.catalogId, title: a.title,
-    year: { start: a.yearStart, end: a.yearEnd, circa: a.circa },
-    status: STATUS_LABELS[a.status] || a.status,
-    fields: Object.entries(a.attrs).map(([key, value]) => {
-      const d = byKey.get(key);
-      return { key, label: d?.label ?? key, value, display: d ? formatValue(d, value) : String(value) };
-    }),
-    description: a.aiDescription, palette: a.palette,
-    images: a.images.map((i) => ({ file: i.original?.split("/").pop(), kind: i.kind, role: i.role, caption: i.caption, sha256: i.sha256, width: i.width, height: i.height })),
-    version: a.version, updatedAt: a.updatedAt,
+export const scheduleIndexing = (env: Env, params: IndexParams) =>
+  startIndexing(env.INDEXER, params, () => runIndexing(params, indexOps(env, params.artworkId), inlineStep));
+
+/** Sync the text now and schedule the rest. */
+async function reindex(env: Env, id: string, describeKey?: string): Promise<ArtworkDTO> {
+  const a = await syncText(env, id);
+  await scheduleIndexing(env, describeKey ? { artworkId: a.id, describeKey } : { artworkId: a.id });
+  return a;
+}
+
+/** The I/O behind each indexing step, for one artwork. */
+export function indexOps(env: Env, artworkId: string): IndexOps {
+  const currentText = async () => {
+    const a = await liveArtwork(env, artworkId);
+    return a ? embedText(a, await loadFieldDefs(env.DB)) : null;
   };
-  await env.BUCKET.put(`artworks/${a.catalogId}/record.json`, JSON.stringify(record, null, 2), { httpMetadata: { contentType: "application/json" } });
+  return {
+    async describe(key) {
+      const visionReady = env.EMBEDDINGS === "workers-ai" && !!env.AI;
+      const row = await env.DB.prepare("SELECT ai_description, deleted_at FROM artworks WHERE id = ?").bind(artworkId).first<{ ai_description: string | null; deleted_at: string | null }>();
+      if (!shouldDescribe({ describeKey: key, visionReady, row }) || !env.AI) return false;
+      const obj = await env.BUCKET.get(key);
+      if (!obj) return false;
+      const out = await env.AI.run((env.VISION_MODEL || DEFAULT_VISION_MODEL) as never, { image: [...new Uint8Array(await obj.arrayBuffer())], prompt: describePrompt(), max_tokens: 160 } as never);
+      const text = parseVisionOutput(out);
+      if (!text) throw new Error("vision model returned no description");
+      // only fills an empty description: never overwrites one typed in meanwhile
+      const r = await env.DB.prepare("UPDATE artworks SET ai_description = ? WHERE id = ? AND deleted_at IS NULL AND (ai_description IS NULL OR trim(ai_description) = '')").bind(text, artworkId).run();
+      return r.meta.changes > 0;
+    },
+    async refreshText() {
+      const a = await liveArtwork(env, artworkId);
+      if (a) await writeText(env, a, await loadFieldDefs(env.DB));
+      return !!a;
+    },
+    async embed() {
+      const text = await currentText();
+      if (text === null) return null;
+      const [vec] = await vectorBackend(env).embed([text]);
+      return { text, vec };
+    },
+    async upsert(e) {
+      const outcome = upsertDecision(await currentText(), e.text);
+      if (outcome !== "upserted") return outcome;
+      const vb = vectorBackend(env);
+      await vb.upsert(artworkId, e.vec);
+      // removed while we were upserting: take the vector back out
+      if (!(await liveArtwork(env, artworkId))) { await vb.remove(artworkId); return "deleted"; }
+      return outcome;
+    },
+  };
 }
 
 export async function createArtwork(env: Env, input: unknown, by: string): Promise<ArtworkDTO> {
@@ -342,8 +381,7 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   const becomesCover = meta.makeCover || (!a.coverImageId && meta.kind === "work") || (!a.cover);
   if (becomesCover) await setCover(env, a.id, id, meta.palette);
   else await env.DB.prepare("UPDATE artworks SET updated_at = ? WHERE id = ?").bind(now(), a.id).run();
-  if (becomesCover && meta.kind === "work") await maybeDescribe(env, a.id, displayKey || origKey);
-  await reindex(env, a.id);
+  await reindex(env, a.id, becomesCover && meta.kind === "work" ? displayKey || origKey : undefined);
   const row = await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first<ImageRow>();
   return { image: imageDTO(row!), duplicate: false };
 }
@@ -355,25 +393,6 @@ async function setCover(env: Env, artworkId: string, imageId: string, palette?: 
     pal = r ? JSON.parse(r.palette) : [];
   }
   await env.DB.prepare("UPDATE artworks SET cover_image_id = ?, palette = ?, updated_at = ? WHERE id = ?").bind(imageId, JSON.stringify(pal || []), now(), artworkId).run();
-}
-
-/** Production only: ask a Workers AI vision model to describe the finished work. */
-async function maybeDescribe(env: Env, artworkId: string, key: string) {
-  if (env.EMBEDDINGS !== "workers-ai" || !env.AI) return;
-  try {
-    const a = await env.DB.prepare("SELECT ai_description FROM artworks WHERE id = ?").bind(artworkId).first<{ ai_description: string | null }>();
-    if (a?.ai_description) return;
-    const obj = await env.BUCKET.get(key);
-    if (!obj) return;
-    const bytes = [...new Uint8Array(await obj.arrayBuffer())];
-    const out = (await env.AI.run((env.VISION_MODEL || "@cf/llava-hf/llava-1.5-7b-hf") as never, {
-      image: bytes, prompt: "Describe this artwork for a search index in two sentences: subject, setting, colors, mood and style.", max_tokens: 160,
-    } as never)) as unknown as { description?: string; response?: string };
-    const text = (out.description || out.response || "").trim();
-    if (text) await env.DB.prepare("UPDATE artworks SET ai_description = ? WHERE id = ?").bind(text.slice(0, 4000), artworkId).run();
-  } catch (e) {
-    console.warn("vision description failed", e);
-  }
 }
 
 const imagePatchSchema = z.object({
