@@ -146,9 +146,13 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout
             const columns = masonry(sec.items.map((a) => a.aspect), cols).map((ix) => ix.map((i) => sec.items[i]));
             return (
               <section key={sec.key} data-year={sec.key} style={{ contentVisibility: "auto", containIntrinsicSize: `auto ${estimate(sec)}px` } as React.CSSProperties}>
-                <h3 style={{ position: "sticky", top: 0, zIndex: 2, margin: "0 calc(-44px - var(--sar)) 0 calc(-1 * var(--gl))", padding: "12px calc(44px + var(--sar)) 10px var(--gl)", display: "flex", alignItems: "baseline", gap: 10, background: "rgba(16,15,14,.86)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)" }}>
-                  <span className="display" style={{ fontSize: 24, fontWeight: 700 }}>{sec.label}</span>
-                </h3>
+                {/* Search results have no heading: the "N close matches" line above already says what they are. */}
+                {ranked ? <h3 className="sr-only">{sec.label}</h3> : (
+                  <h3 className="wall-head">
+                    <span className="display">{sec.label}</span>
+                    <span aria-hidden className="wall-head-rule" />
+                  </h3>
+                )}
                 <div style={{ display: "flex", gap, alignItems: "flex-start", padding: "6px 0 18px" }}>
                   {columns.map((col, ci) => (
                     <div key={ci} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 18 }}>
