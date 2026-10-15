@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  fitArt, heroBox, keyboardInset, landscapeChrome, layoutFor, masonry, panelWidth, pieceSplit, revealDelta, slideBox, stripSpec, wallColumns,
+  fitArt, heroBox, keyboardInset, landscapeChrome, layoutFor, masonry, masonryHeight, panelWidth, pieceSplit, revealDelta, slideBox, stripSpec, wallColumns,
 } from "../../src/layout";
 
 describe("layoutFor", () => {
@@ -88,17 +88,29 @@ describe("heroBox", () => {
 });
 
 describe("stripSpec", () => {
-  it("keeps the original portrait filmstrip", () => {
-    expect(stripSpec(false)).toMatchObject({ sp: 78, thumb: 60, top: 16, label: 84, tick: 100, head: 112, height: 124 });
+  it("keeps the portrait filmstrip spacing, without the old tick ruler", () => {
+    expect(stripSpec(false)).toMatchObject({ sp: 78, thumb: 60, top: 16, label: 84, head: 81, height: 102 });
   });
   it("is shorter on a phone held sideways, with everything inside it", () => {
-    const s = stripSpec(true);
-    expect(s.height).toBeLessThan(stripSpec(false).height);
-    expect(s.sp).toBeGreaterThan(s.thumb);
-    expect(s.top + s.thumb).toBeLessThan(s.label);
-    expect(s.label).toBeLessThan(s.tick);
-    expect(s.tick + s.tickH).toBeLessThanOrEqual(s.head);
-    expect(s.head).toBeLessThanOrEqual(s.height);
+    for (const s of [stripSpec(true), stripSpec(false)]) {
+      expect(s.sp).toBeGreaterThan(s.thumb);
+      expect(s.top + s.thumb).toBeLessThan(s.label);
+      expect(s.head).toBeLessThan(s.label);
+      expect(s.label + 13).toBeLessThanOrEqual(s.height);
+    }
+    expect(stripSpec(true).height).toBeLessThan(stripSpec(false).height);
+  });
+});
+
+describe("masonryHeight", () => {
+  it("is the tallest column: tiles at the column width plus captions and gaps", () => {
+    // two square tiles in one column of 100px: 2 × (100 + 54) + 18
+    expect(masonryHeight([1, 1], 1, 100)).toBe(326);
+    // two columns share them
+    expect(masonryHeight([1, 1], 2, 100)).toBe(154);
+    expect(masonryHeight([], 2, 100)).toBe(0);
+    // aspects are clamped as drawn (0.6–1.7)
+    expect(masonryHeight([0.1], 1, 60, { caption: 0 })).toBe(100);
   });
 });
 

@@ -1,7 +1,9 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Summary } from "../types";
-import { decadeOf, mediumOf, pct, STATUS_COLOR, yearLabel } from "../util";
-import { masonry, wallColumns, type Layout } from "../layout";
+import { mediumOf, pct, STATUS_COLOR, yearLabel } from "../util";
+import { masonry, masonryHeight, wallColumns, type Layout } from "../layout";
+import { groupYears, sortNewestFirst, yearFull } from "../years";
+import { YearRail, type YearEntry } from "./YearNav";
 import { ICheck, IStack } from "./Icons";
 import { PreviewTile } from "./PreviewTile";
 
@@ -14,11 +16,17 @@ interface Props {
   selected?: ReadonlySet<string>;
   onToggle?: (id: string) => void;
   layout: Layout;
+  /** px below the top safe area where the wall starts (under the top bar, and the chips when shown). */
+  top: number;
 }
 
 type Section = { key: string; label: string; items: Summary[] };
 
-export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout }: Props) {
+/**
+ * Masonry grouped by year, newest first, undated last, with sticky year headers
+ * and a year index down the right edge (press and drag to scrub).
+ */
+export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout, top }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const inner = useRef<HTMLDivElement>(null);
   const [contentW, setContentW] = useState(330);
@@ -83,36 +91,63 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout
   }, [contentW, cols]);
   const sections = useMemo<Section[]>(() => {
     if (ranked) return [{ key: "best", label: "Best matches", items: list }];
-    const out: Section[] = [];
-    const sorted = [...list].sort((a, b) => (b.yearStart ?? -1) - (a.yearStart ?? -1));
-    for (const a of sorted) {
-      const d = decadeOf(a.yearStart);
-      const key = d == null ? "undated" : String(d);
-      let s = out.find((x) => x.key === key);
-      if (!s) { s = { key, label: d == null ? "Undated" : `${d}s`, items: [] }; out.push(s); }
-      s.items.push(a);
-    }
-    return out;
+    const sorted = sortNewestFirst(list);
+    return groupYears(sorted).map((g) => ({ key: String(g.key), label: yearFull(g.year), items: sorted.slice(g.first, g.first + g.count) }));
   }, [list, ranked]);
+  const entries = useMemo<YearEntry[]>(() => sections.map((s) => ({ key: s.key, year: s.key === "undated" ? null : Number(s.key), count: s.items.length, thumb: s.items[0]?.thumb ?? null })), [sections]);
+  // off-screen sections are sized by estimate (content-visibility): estimate well, so a jump to a far year lands on it
+  const colW = Math.max(60, (contentW - gap * (cols - 1)) / cols);
+  const estimate = (sec: Section) => masonryHeight(sec.items.map((a) => a.aspect), cols, colW) + 50 + 24;
 
-  const jump = (key: string) => {
-    const el = scroller.current?.querySelector<HTMLElement>(`[data-dec="${key}"]`);
-    if (el && scroller.current) scroller.current.scrollTo({ top: el.offsetTop - 2, behavior: "smooth" });
+  // the year at the top of the scroll, for the rail
+  const [activeYear, setActiveYear] = useState(0);
+  const spyRaf = useRef(0);
+  const spy = () => {
+    cancelAnimationFrame(spyRaf.current);
+    spyRaf.current = requestAnimationFrame(() => {
+      const sc = scroller.current;
+      if (!sc || jumping.current) return;
+      const secs = sc.querySelectorAll<HTMLElement>("section[data-year]");
+      let a = 0;
+      secs.forEach((el, i) => { if (el.offsetTop <= sc.scrollTop + 12) a = i; });
+      setActiveYear(a);
+    });
   };
+  useEffect(() => () => cancelAnimationFrame(spyRaf.current), []);
+
+  // jump straight to a year (no smooth scroll: the rail is scrubbed live); put it
+  // back once the sections it passed have rendered at their real height
+  const jumping = useRef<string | null>(null);
+  const jumpTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const jump = (i: number) => {
+    const key = sections[i]?.key, sc = scroller.current;
+    if (!key || !sc) return;
+    setActiveYear(i);
+    jumping.current = key;
+    const fix = () => {
+      if (jumping.current !== key) return;
+      const el = sc.querySelector<HTMLElement>(`[data-year="${key}"]`);
+      if (el && Math.abs(sc.scrollTop - el.offsetTop) > 1) sc.scrollTop = el.offsetTop;
+    };
+    fix();
+    jumpTimers.current.forEach(clearTimeout);
+    jumpTimers.current = [setTimeout(fix, 16), setTimeout(fix, 90), setTimeout(fix, 260), setTimeout(() => { fix(); if (jumping.current === key) jumping.current = null; }, 420)];
+  };
+  useEffect(() => () => jumpTimers.current.forEach(clearTimeout), []);
 
   let k = 0;
   return (
     <>
-      <div ref={scroller} className="scroll viewR" data-testid="wall" onScroll={remember}
-        style={{ position: "absolute", left: 0, right: 0, top: `calc(${layout.landscape ? 70 : 118}px + var(--sat))`, bottom: 0, overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch" }}>
+      <div ref={scroller} className="scroll viewR" data-testid="wall" onScroll={() => { remember(); spy(); }}
+        onWheel={() => { jumping.current = null; }} onTouchStart={() => { jumping.current = null; }}
+        style={{ position: "absolute", left: 0, right: 0, top: `calc(${top}px + var(--sat))`, bottom: 0, overflowY: "auto", overflowX: "hidden", WebkitOverflowScrolling: "touch" }}>
         <div ref={inner} style={{ position: "relative", padding: "4px calc(44px + var(--sar)) calc(130px + var(--sab)) var(--gl)" }}>
           {sections.map((sec) => {
             const columns = masonry(sec.items.map((a) => a.aspect), cols).map((ix) => ix.map((i) => sec.items[i]));
             return (
-              <section key={sec.key} data-dec={sec.key} style={{ contentVisibility: "auto", containIntrinsicSize: "auto 900px" } as React.CSSProperties}>
+              <section key={sec.key} data-year={sec.key} style={{ contentVisibility: "auto", containIntrinsicSize: `auto ${estimate(sec)}px` } as React.CSSProperties}>
                 <h3 style={{ position: "sticky", top: 0, zIndex: 2, margin: "0 calc(-44px - var(--sar)) 0 calc(-1 * var(--gl))", padding: "12px calc(44px + var(--sar)) 10px var(--gl)", display: "flex", alignItems: "baseline", gap: 10, background: "rgba(16,15,14,.86)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)" }}>
                   <span className="display" style={{ fontSize: 24, fontWeight: 700 }}>{sec.label}</span>
-                  <span className="mono" style={{ fontSize: 11, letterSpacing: ".08em", color: "var(--muted)" }}>{sec.items.length} {sec.items.length === 1 ? "WORK" : "WORKS"}</span>
                 </h3>
                 <div style={{ display: "flex", gap, alignItems: "flex-start", padding: "6px 0 18px" }}>
                   {columns.map((col, ci) => (
@@ -122,7 +157,7 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout
                         const asp = Math.max(0.6, Math.min(1.7, a.aspect || 1));
                         const sel = selected?.has(a.id);
                         return (
-                          <button key={a.id} data-id={a.id} className="press tilein" onClick={() => (selected && onToggle ? onToggle(a.id) : onOpen(a.id))} data-testid="wall-tile"
+                          <button key={a.id} data-id={a.id} className={k < 12 ? "press tilein" : "press"} onClick={() => (selected && onToggle ? onToggle(a.id) : onOpen(a.id))} data-testid="wall-tile"
                             aria-label={selected ? `Select ${a.title || "Untitled"}` : `Open ${a.title || "Untitled"}`} aria-pressed={selected ? !!sel : undefined}
                             style={{ display: "block", width: "100%", padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)", animationDelay: `${Math.min(k++ * 40, 400)}ms` }}>
                             <div style={{ position: "relative", aspectRatio: String(asp), borderRadius: 14, overflow: "hidden", background: "#23201C", boxShadow: sel ? "0 0 0 3px var(--bg),0 0 0 5px var(--accent)" : "0 10px 24px rgba(0,0,0,.35)", transition: "box-shadow .25s" }}>
@@ -150,14 +185,8 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle, layout
         </div>
       </div>
       {!ranked && sections.length > 1 && (
-        <nav className="viewR scroll" aria-label="Jump to decade" style={{ position: "absolute", right: "max(4px, var(--sar))", top: `calc(${layout.landscape ? 82 : 150}px + var(--sat))`, maxHeight: `calc(100% - ${layout.landscape ? 82 + 20 : 150 + 110}px - var(--sat) - var(--sab))`, overflowY: "auto", zIndex: 4, display: "flex", flexDirection: "column", alignItems: "center", gap: 2, padding: "6px 0", borderRadius: 99, background: "rgba(30,28,25,.6)" }}>
-          {sections.map((s) => (
-            <button key={s.key} onClick={() => jump(s.key)} aria-label={`Jump to ${s.label}`}
-              style={{ flex: "none", width: 34, height: layout.compact ? 34 : 36, border: 0, background: "transparent", fontFamily: "var(--mono)", fontSize: 11, fontWeight: 600, color: "var(--text-2)" }}>
-              {s.key === "undated" ? "—" : `'${s.key.slice(2, 4)}`}
-            </button>
-          ))}
-        </nav>
+        <YearRail entries={entries} active={Math.min(activeYear, entries.length - 1)} onPick={jump}
+          style={{ right: "max(3px, var(--sar))", top: `calc(${top + 10}px + var(--sat))`, bottom: `calc(${layout.landscape ? 12 : 24}px + var(--sab))`, zIndex: 4 }} />
       )}
     </>
   );

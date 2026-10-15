@@ -46,11 +46,14 @@ def drag(page, locator, dx, dy=0, steps=12):
         page.wait_for_timeout(16)
     page.mouse.up()
 
-@step("timeline loads with the latest piece and 14 works")
+@step("first visit opens the wall (no count line); the timeline opens on the latest piece")
 def t_load(page):
     page.goto(BASE + "/", wait_until="networkidle")
+    expect(page.get_by_test_id("wall")).to_be_visible()
+    expect(page.get_by_test_id("wall-tile")).to_have_count(14)
+    expect(page.get_by_test_id("count-label")).to_have_count(0)
+    page.get_by_role("tab", name="Timeline").click()
     expect(page.get_by_test_id("timeline")).to_be_visible()
-    expect(page.get_by_test_id("count-label")).to_have_text("14 WORKS")
     expect(page.get_by_test_id("hero-title")).to_contain_text("Prismatic Sunset at Soda Lake")
     page.wait_for_timeout(600)
 
@@ -64,9 +67,13 @@ def t_scrub(page):
     assert after <= before - 2, f"expected to move back at least 2, {before} -> {after}"
     assert "Prismatic" not in hero_title(page)
 
-@step("tapping a decade jumps to it")
-def t_decade(page):
-    page.get_by_role("navigation", name="Jump to decade").get_by_role("button", name="'90s").click()
+@step("the year ruler steps to a year with the keyboard")
+def t_year(page):
+    ruler = page.get_by_test_id("year-ruler")
+    ruler.focus()
+    for _ in range(40):
+        if (ruler.get_attribute("aria-valuetext") or "").startswith("1993"): break
+        page.keyboard.press("ArrowLeft")
     page.wait_for_timeout(700)
     expect(page.get_by_test_id("hero-title")).to_contain_text("John Day River")
     expect(page.get_by_test_id("hero-title")).to_contain_text("1993")
@@ -81,17 +88,18 @@ def t_swipe(page):
     page.wait_for_timeout(600)
     expect(page.get_by_test_id("hero-title")).to_contain_text("Adelaida Hilltop View")
 
-@step("wall view shows every work grouped by decade and the rail jumps")
+@step("wall view shows every work grouped by year and the year rail jumps")
 def t_wall(page):
     page.get_by_role("tab", name="Wall").click()
     expect(page.get_by_test_id("wall")).to_be_visible()
     page.wait_for_timeout(700)
     expect(page.get_by_test_id("wall-tile")).to_have_count(14)
     wall = page.get_by_test_id("wall")
-    page.get_by_role("button", name="Jump to 1980s").click()
+    page.get_by_test_id("year-rail").focus()
+    page.keyboard.press("End")
     page.wait_for_timeout(900)
     assert wall.evaluate("e => e.scrollTop") > 400, "rail jump did not scroll"
-    expect(page.locator("[data-dec='1980'] h3")).to_be_in_viewport()
+    expect(page.locator("section[data-year]").last.locator("h3")).to_be_in_viewport()
 
 @step("search expands in the row, suggests, and finds by meaning")
 def t_search(page):
@@ -117,7 +125,7 @@ def t_flip(page):
 def t_close_search(page):
     page.get_by_role("button", name="Clear and close search").click()
     page.wait_for_timeout(700)
-    expect(page.get_by_test_id("count-label")).to_have_text("14 WORKS")
+    expect(page.get_by_test_id("count-label")).to_have_count(0)
     expect(page.get_by_role("tab", name="Timeline")).to_be_visible()
 
 @step("filters: medium + where-it-is narrow results live with chips")
@@ -132,7 +140,7 @@ def t_filters(page):
     expect(page.get_by_test_id("show-results")).to_have_text("Show 2 works")
     page.get_by_test_id("show-results").click()
     page.wait_for_timeout(600)
-    expect(page.get_by_test_id("count-label")).to_have_text("2 OF 14 WORKS")
+    expect(page.get_by_test_id("count-label")).to_have_text("2 OF 14")
     expect(page.get_by_role("button", name="Remove filter Pastel")).to_be_visible()
     expect(page.get_by_role("button", name="Filters, 2 active")).to_be_visible()
 
@@ -140,7 +148,7 @@ def t_filters(page):
 def t_filters2(page):
     page.get_by_role("button", name="Remove filter Pastel").click()
     page.get_by_role("button", name="Remove filter In studio").click()
-    expect(page.get_by_test_id("count-label")).to_have_text("14 WORKS")
+    expect(page.get_by_test_id("count-label")).to_have_count(0)
     page.get_by_role("button", name=re.compile(r"^Filters")).click()
     sheet = page.get_by_test_id("filter-sheet")
     page.wait_for_timeout(400)
@@ -308,7 +316,7 @@ def t_new(page, tmp=os.path.join(SHOTS, "_new.png")):
     expect(piece.get_by_text("1 / 1 IMAGES")).to_be_visible()
     piece.get_by_test_id("back").click()
     page.wait_for_timeout(800)
-    expect(page.get_by_test_id("count-label")).to_have_text("15 WORKS")
+    expect(page.get_by_test_id("wall-tile")).to_have_count(15)
     expect(page.get_by_role("button", name="Open Morning at Dip Creek")).to_be_visible()
 
 @step("removing a work asks first and then takes it out of the archive")
@@ -321,7 +329,7 @@ def t_remove(page):
     piece.get_by_test_id("confirm-remove").click()
     expect(page.get_by_test_id("toast")).to_contain_text("Removed from the archive")
     page.wait_for_timeout(800)
-    expect(page.get_by_test_id("count-label")).to_have_text("14 WORKS")
+    expect(page.get_by_test_id("wall-tile")).to_have_count(14)
 
 @step("no matches shows a friendly empty state with a way out")
 def t_empty(page):
@@ -329,7 +337,7 @@ def t_empty(page):
     page.keyboard.type("qqqzzxx")
     expect(page.get_by_test_id("no-matches")).to_be_visible(timeout=5000)
     page.get_by_role("button", name="Clear search & filters").click()
-    expect(page.get_by_test_id("count-label")).to_have_text("14 WORKS")
+    expect(page.get_by_test_id("count-label")).to_have_count(0)
 
 def main():
     with sync_playwright() as p:
@@ -341,7 +349,7 @@ def main():
         page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
         page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" and not re.search(r"status of 4\d\d", m.text) else None)
         page.on("response", lambda r: errors.append(f"HTTP {r.status} {r.url}") if r.status >= 500 else None)
-        for t in [t_load, t_scrub, t_decade, t_swipe, t_wall, t_search, t_flip, t_close_search, t_filters, t_filters2,
+        for t in [t_load, t_scrub, t_year, t_swipe, t_wall, t_search, t_flip, t_close_search, t_filters, t_filters2,
                   t_piece, t_carousel, t_journey, t_image_menu, t_edit, t_persist, t_upload, t_bad_upload, t_similar, t_new, t_remove, t_empty]:
             t(page)
         browser.close()

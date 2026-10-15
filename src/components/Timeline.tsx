@@ -1,9 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Summary } from "../types";
-import { clamp, decadeOf, frameStyle, mediumOf, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
+import { clamp, frameStyle, mediumOf, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
 import { fitArt, heroBox, landscapeChrome, stripSpec, type Layout } from "../layout";
 import { PreviewTile } from "./PreviewTile";
 import { ArchivedBadge } from "./Wall";
+import { DensityRuler, type YearEntry } from "./YearNav";
+import { groupAt, groupYears, yearKeyOf } from "../years";
 
 const WINDOW = 14;
 
@@ -15,15 +17,20 @@ interface Props {
   matchOf?: (id: string) => number | undefined;
   statusLabel: (s: string) => string;
   layout: Layout;
+  /** Portrait: px below the top safe area where the timeline starts (under the top bar, and the chips when shown). */
+  top: number;
 }
 
 /**
- * Portrait: year, hero, label, decade jumps and filmstrip stacked down the phone.
+ * Portrait: year, hero, label, year navigation and filmstrip stacked down the phone.
  * Landscape: the painting fills the left, with the filmstrip right under it;
- * the label, decade jumps (and, from App, the top bar and Add work) stand in a
- * panel on the right, like a wall label beside the work.
+ * the label, year navigation (and, from App, the top bar and Add work) stand in
+ * a panel on the right, like a wall label beside the work.
+ *
+ * Years are navigated with a density ruler: one bar per year, as tall as that
+ * year's output, dragged to scrub.
  */
-export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, layout }: Props) {
+export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, layout, top }: Props) {
   const { landscape, compact, panel } = layout;
   const S = stripSpec(compact);
   const SP = S.sp;
@@ -58,16 +65,10 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
 
   const box = heroBox(landscape, area.w, area.h);
   const cx = stripW / 2;
-  const decades = useMemo(() => {
-    const out: { key: string; label: string; first: number }[] = [];
-    list.forEach((a, i) => {
-      const d = decadeOf(a.yearStart);
-      const key = d == null ? "undated" : String(d);
-      if (!out.some((x) => x.key === key)) out.push({ key, label: d == null ? "Undated" : `'${String(d).slice(2)}s`, first: i });
-    });
-    return out;
-  }, [list]);
-  const curDecade = item ? (decadeOf(item.yearStart) == null ? "undated" : String(decadeOf(item.yearStart))) : "";
+  const groups = useMemo(() => groupYears(list), [list]);
+  const entries = useMemo<YearEntry[]>(() => groups.map((g) => ({ key: String(g.key), year: g.year, count: g.count, thumb: list[g.first]?.thumb ?? null })), [groups, list]);
+  const activeYear = groupAt(groups, cur);
+  const pickYear = (gi: number) => { const g = groups[gi]; if (g) onIndex(g.first); };
 
   const scaleOf = (el: HTMLElement) => { const r = el.getBoundingClientRect(); return { sc: r.width / el.offsetWidth || 1, left: r.left }; };
 
@@ -160,23 +161,21 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
     </span>
   );
 
-  const decadeChips = (wrap: boolean) => decades.map((d) => (
-    <button key={d.key} className="chip press" aria-pressed={d.key === curDecade} onClick={() => { onIndex(d.first); vibrate(5); }}
-      style={wrap ? { gridColumn: d.key === "undated" ? "span 2" : undefined, height: compact ? 32 : 36, minWidth: 0, padding: 0, fontFamily: "var(--mono)", fontSize: 12, justifyContent: "center" } : { height: 34, minWidth: 50, padding: "0 10px", fontFamily: "var(--mono)", fontSize: 12, justifyContent: "center" }}>{d.label}</button>
-  ));
+  const yearNavInline = <DensityRuler entries={entries} active={activeYear} onPick={pickYear} compact={compact} />;
 
   const strip = (style: React.CSSProperties) => (
     <div ref={stripRef} role="slider" tabIndex={0} aria-label="Scrub through the years" aria-valuemin={0} aria-valuemax={n - 1} aria-valuenow={cur}
       aria-valuetext={`${item.title || "Untitled"}, ${yearLabel(item)}`} onKeyDown={onKey} data-testid="strip"
       onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={() => setDrag(null)} className="clip"
       style={{ position: "relative", height: S.height, flex: "none", touchAction: "none", cursor: dragging ? "grabbing" : "grab", ...style }}>
-      <div aria-hidden style={{ position: "absolute", left: 0, right: 0, top: S.tick, height: S.tickH, background: `repeating-linear-gradient(90deg,rgba(243,239,232,.2) 0 1px,transparent 1px ${SP / 4}px)`, backgroundPosition: `${trackX + S.thumb / 2}px 0`, transition: dragging ? "none" : "background-position .6s var(--ease-out)" }} />
       <div aria-hidden style={{ position: "absolute", left: cx - 1, top: 0, width: 2, height: S.head, borderRadius: 2, background: "var(--accent)", boxShadow: "0 0 14px rgba(var(--accent-rgb), .7)" }} />
       <div style={{ position: "absolute", left: 0, top: 0, height: "100%", transform: `translateX(${trackX}px)`, transition: dragging ? "none" : "transform .6s var(--ease-out)" }}>
         {list.slice(tlo, thi + 1).map((a, j) => {
           const i = tlo + j, d = Math.abs(i * SP - offset) / SP, near = Math.max(0, 1 - d), on = i === cur;
+          const firstOfYear = i === 0 || yearKeyOf(list[i - 1].yearStart) !== yearKeyOf(a.yearStart);
           return (
             <div key={a.id}>
+              {firstOfYear && i > 0 && <span aria-hidden style={{ position: "absolute", left: i * SP - (SP - S.thumb) / 2 - 0.5, top: S.top + 4, width: 1, height: S.label - S.top + 8, background: "rgba(243,239,232,.22)" }} />}
               <button tabIndex={-1} aria-label={`${a.title || "Untitled"}, ${yearLabel(a)}`} onClick={() => onIndex(i)}
                 style={{ position: "absolute", top: S.top, left: i * SP, width: S.thumb, height: S.thumb, padding: 0, border: 0, borderRadius: compact ? 11 : 14, overflow: "hidden", background: "#23201C",
                   transform: `translateY(${-near * S.lift}px) scale(${1 + near * S.grow - Math.min(d, 3) * 0.04})`, opacity: 1 - Math.min(d, 4) * 0.16,
@@ -184,7 +183,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
                   transition: dragging ? "none" : "transform .45s var(--ease-out), opacity .3s, box-shadow .3s" }}>
                 {a.thumb ? <img src={a.thumb} alt="" draggable={false} loading="lazy" decoding="async" className="art-img" /> : <PreviewTile state={a.preview} compact />}
               </button>
-              <span aria-hidden style={{ position: "absolute", top: S.label, left: i * SP, width: S.thumb, textAlign: "center", fontFamily: "var(--mono)", fontSize: 11, color: on ? "var(--text)" : "var(--faint)" }}>{a.yearStart ?? "—"}</span>
+              {(firstOfYear || on) && <span aria-hidden style={{ position: "absolute", top: S.label, left: i * SP - 8, width: S.thumb + 16, textAlign: "center", fontFamily: "var(--mono)", fontSize: 11, fontWeight: on ? 600 : 400, color: on ? "var(--text)" : "var(--muted)" }}>{a.yearStart ?? "—"}</span>}
             </div>
           );
         })}
@@ -195,7 +194,9 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
   // ------------------------------------------------------------ landscape
   if (landscape) {
     const bottom = "max(6px, var(--sab))";
-    const colRight = `calc(var(--gr) + ${panel + (compact ? 20 : 32)}px)`;
+    // c puts its year index in the gutter between the painting and the label
+    const gutter = compact ? 20 : 32;
+    const colRight = `calc(var(--gr) + ${panel + gutter}px)`;
     const yearSize = compact ? 66 : 112;
     const { panelTop } = landscapeChrome(compact);
     return (
@@ -230,9 +231,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
               <span className="clamp2 display" style={{ fontSize: compact ? 22 : 32, lineHeight: 1.08, fontWeight: 700 }}>{item.title || "Untitled"}</span>
               {meta(false)}
             </button>
-            <nav aria-label="Jump to decade" style={{ marginTop: compact ? 12 : 22 }}>
-              <div style={{ display: "grid", gridTemplateColumns: `repeat(auto-fill, minmax(${compact ? 42 : 52}px, 1fr))`, gap: compact ? 5 : 6 }}>{decadeChips(true)}</div>
-            </nav>
+            {yearNavInline && <div style={{ marginTop: compact ? 14 : 24 }}>{yearNavInline}</div>}
           </div>
         </div>
       </div>
@@ -241,8 +240,8 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
 
   // ------------------------------------------------------------ portrait
   return (
-    <div className="viewL" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", paddingTop: "calc(118px + var(--sat))", paddingBottom: "calc(96px + var(--sab))" }} data-testid="timeline">
-      <div ref={heroRef} style={{ position: "relative", flex: 1, minHeight: 200 }}>
+    <div className="viewL" style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", paddingTop: `calc(${top}px + var(--sat))`, paddingBottom: "calc(96px + var(--sab))" }} data-testid="timeline">
+      <div ref={heroRef} style={{ position: "relative", flex: 1, minHeight: 200, margin: 0 }}>
         <div aria-hidden style={{ position: "absolute", left: 0, right: 0, top: -6, height: 150, overflow: "hidden", pointerEvents: "none" }}>
           {yearsOutline("min(140px, 36vw)", "center")}
         </div>
@@ -260,11 +259,9 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel, l
         {meta(true)}
       </button>
 
-      <nav aria-label="Jump to decade" className="scroll" style={{ marginTop: 12, overflowX: "auto", flex: "none" }}>
-        <div style={{ display: "flex", gap: 6, padding: "0 16px", width: "max-content", margin: "0 auto" }}>{decadeChips(false)}</div>
-      </nav>
+      <div style={{ margin: "12px var(--gr) 0 var(--gl)" }}>{yearNavInline}</div>
 
-      {strip({ marginTop: 10 })}
+      {strip({ marginTop: 8 })}
     </div>
   );
 }

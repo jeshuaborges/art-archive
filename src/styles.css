@@ -71,8 +71,15 @@ img { display: block; }
 }
 /* clip, not hidden: a hidden box can still be scrolled (by focus, or a mouse drag), which slid the views sideways */
 .clip { overflow: hidden; overflow: clip; }
-html.standalone .app { bottom: auto; height: 100vh; }
-@media (display-mode: standalone) { .app { bottom: auto; height: 100vh; } }
+/*
+ * In standalone mode 100vh (like 100%) is the screen minus the status bar, so a
+ * shell of that height stopped one status bar short of the bottom (seen on an
+ * iPhone, October 2026). Add the top inset back; html and body follow so no
+ * seam of page background can show either.
+ */
+html.standalone, html.standalone body { min-height: calc(100vh + var(--sat)); }
+html.standalone .app { bottom: auto; height: calc(100vh + var(--sat)); }
+@media (display-mode: standalone) { .app { bottom: auto; height: calc(100vh + var(--sat)); } }
 @media (min-width: 560px) {
   .app { border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
 }

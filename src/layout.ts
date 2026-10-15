@@ -70,14 +70,16 @@ export function heroBox(landscape: boolean, cw: number, ch: number): { w: number
   return { w, h: Math.min(w, h) };
 }
 
-/** Geometry of the scrubbable filmstrip. Portrait values are the original ones. */
+/**
+ * Geometry of the scrubbable filmstrip. The year navigation (ruler, carousel or
+ * rail) carries the years now, so the strip has no tick ruler: thumbnails, the
+ * year under the first piece of each year, and the playhead.
+ */
 export interface StripSpec {
   sp: number;      // px between thumbnails
   thumb: number;   // thumbnail size
   top: number;     // thumbnail top
   label: number;   // year label top
-  tick: number;    // tick ruler top
-  tickH: number;
   head: number;    // playhead height
   height: number;  // whole strip
   lift: number;    // how far the current thumb rises
@@ -86,8 +88,8 @@ export interface StripSpec {
 
 export function stripSpec(compact: boolean): StripSpec {
   return compact
-    ? { sp: 62, thumb: 46, top: 13, label: 67, tick: 81, tickH: 7, head: 89, height: 92, lift: 5, grow: 0.3 }
-    : { sp: 78, thumb: 60, top: 16, label: 84, tick: 100, tickH: 9, head: 112, height: 124, lift: 8, grow: 0.32 };
+    ? { sp: 62, thumb: 46, top: 13, label: 67, head: 64, height: 82, lift: 5, grow: 0.3 }
+    : { sp: 78, thumb: 60, top: 16, label: 84, head: 81, height: 102, lift: 8, grow: 0.32 };
 }
 
 /**
@@ -117,6 +119,18 @@ export function masonry(aspects: (number | null | undefined)[], cols: number): n
     hgt[c] += 1 / asp + 0.38;
   });
   return out;
+}
+
+/**
+ * Estimated height of one masonry block (tiles plus captions) for columns
+ * `colW` px wide, so off-screen wall sections can be sized before they render
+ * and a jump to a far year lands where it should.
+ */
+export function masonryHeight(aspects: (number | null | undefined)[], cols: number, colW: number, opts: { gap?: number; caption?: number } = {}): number {
+  const gap = opts.gap ?? 18, caption = opts.caption ?? 54;
+  const heights = masonry(aspects, cols).map((ix) =>
+    ix.reduce((h, i, k) => h + colW / clampN(aspects[i] || 1, 0.6, 1.7) + caption + (k ? gap : 0), 0));
+  return Math.round(Math.max(0, ...heights));
 }
 
 /** Piece view in landscape: width of the image pane (the details pane gets the rest, ≤ 520). */

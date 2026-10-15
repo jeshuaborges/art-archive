@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, onSignedOut } from "./api";
 import { prepareImage } from "./imageprep";
 import type { Config, FieldDef, Filters, Summary } from "./types";
-import { archivedChipLabel, emptyFilters } from "./types";
+import { archivedChipLabel, countLabel, emptyFilters } from "./types";
 import { paletteHas, save, STATUS_COLOR, store, SWATCHES, vibrate } from "./util";
 import { TopBar } from "./components/TopBar";
 import { Timeline } from "./components/Timeline";
@@ -15,6 +15,7 @@ import { SignedOut } from "./components/SignedOut";
 import { shouldProbe } from "./session";
 import { landscapeChrome, stripSpec } from "./layout";
 import { useKeyboardInset, useLayout } from "./viewport";
+import { defaultTimelineIndex, sortOldestFirst } from "./years";
 
 type View = "timeline" | "wall";
 
@@ -24,7 +25,7 @@ export function App() {
   const [items, setItems] = useState<Summary[] | null>(null);
   const [bootError, setBootError] = useState<string | null>(null);
   const [signedOut, setSignedOut] = useState(false);
-  const [view, setViewState] = useState<View>(() => store<View>("view", "timeline"));
+  const [view, setViewState] = useState<View>(() => store<View>("view", "wall"));
   const [q, setQ] = useState("");
   const [matches, setMatches] = useState<Map<string, number> | null>(null);
   const [searching, setSearching] = useState(false);
@@ -146,13 +147,13 @@ export function App() {
   }, [filters]);
 
   const filtered = useMemo(() => (items || []).filter((a) => passes(a) && (!matches || matches.has(a.id))), [items, passes, matches]);
-  const byYear = useMemo(() => [...filtered].sort((a, b) => (a.yearStart ?? 99999) - (b.yearStart ?? 99999) || a.catalogId.localeCompare(b.catalogId)), [filtered]);
+  const byYear = useMemo(() => sortOldestFirst(filtered), [filtered]);
   const ranked = useMemo(() => (matches ? [...filtered].sort((a, b) => (matches.get(b.id) || 0) - (matches.get(a.id) || 0)) : filtered), [filtered, matches]);
   const tlIndex = (() => {
     const i = tlId ? byYear.findIndex((a) => a.id === tlId) : -1;
     if (i >= 0) return i;
     if (matches && ranked.length) return Math.max(0, byYear.findIndex((a) => a.id === ranked[0].id));
-    return Math.max(0, byYear.length - 1);
+    return defaultTimelineIndex(byYear);
   })();
 
   const statusLabel = useCallback((s: string) => config?.statuses.find((x) => x.value === s)?.label || s, [config]);
@@ -233,6 +234,10 @@ export function App() {
   const floatPos: React.CSSProperties = tlLandscape
     ? { left: `calc(100% - var(--gr) - ${panel}px)`, bottom: `calc(${strip.height - strip.top - strip.thumb - (addH - strip.thumb) / 2}px + ${stripBottom})` }
     : { left: "50%", bottom: `calc(${landscape ? 16 : 26}px + var(--sab))`, transform: "translateX(-50%)" };
+  const count = countLabel({ total: items ? items.length : null, shown: filtered.length, searching: !!matches, archived, filtered: chips.length > (archivedChip ? 1 : 0) });
+  // the chips row only takes room when it has something to say; otherwise the views move up under the top bar
+  const chipsRow = chips.length > 0 || count !== null;
+  const viewTop = landscape ? 70 : chipsRow ? 118 : 72;
   const chipsPos: React.CSSProperties = !landscape
     ? { left: 0, right: 0, top: "calc(72px + var(--sat))", height: 44 }
     : view === "timeline"
@@ -247,7 +252,7 @@ export function App() {
 
         <TopBar view={view} onView={setView} q={q} onQ={(v) => { setQ(v); setTlId(null); }} searching={searching} filterCount={chips.length} onOpenFilters={() => setSheet("filters")} layout={layout} />
 
-        <div className="scroll" style={{ position: "absolute", ...chipsPos, zIndex: 5, overflowX: "auto", overflowY: "hidden" }}>
+        {chipsRow && <div className="scroll" style={{ position: "absolute", ...chipsPos, zIndex: 5, overflowX: "auto", overflowY: "hidden" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, height: "100%", padding: landscape ? 0 : "0 16px", width: "max-content" }} data-testid="chips-row">
             {chips.map((c) => (
               <button key={c.label} className="popin press" onClick={c.remove} aria-label={`Remove filter ${c.label}`}
@@ -255,19 +260,17 @@ export function App() {
                 {c.dot && <span style={{ width: 8, height: 8, borderRadius: 9, background: c.dot }} />}{c.label}<span style={{ color: "var(--muted)" }}><IClose /></span>
               </button>
             ))}
-            <span className="mono" style={{ fontSize: 11, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap", paddingLeft: landscape && !chips.length ? 0 : 4 }} data-testid="count-label">
-              {items === null ? "LOADING…" : matches ? `${filtered.length} CLOSE ${filtered.length === 1 ? "MATCH" : "MATCHES"}` : archived === "only" ? (chips.length > 1 ? `${filtered.length} OF ${items.length} ARCHIVED` : `${items.length} ARCHIVED`) : chips.length ? `${filtered.length} OF ${items.length} WORKS` : `${items.length} ${items.length === 1 ? "WORK" : "WORKS"}`}
-            </span>
+            {count && <span className="mono" style={{ fontSize: 11, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap", paddingLeft: landscape && !chips.length ? 0 : 4 }} data-testid="count-label">{count}</span>}
           </div>
-        </div>
+        </div>}
 
         {items === null && <div style={landscape ? { position: "absolute", left: "calc(var(--gl) + 48px)", right: `calc(var(--gr) + ${panel + 72}px)`, top: "calc(28px + var(--sat))", bottom: `calc(${strip.height + 24}px + var(--sab))`, borderRadius: 8 } : { position: "absolute", left: 60, right: 60, top: 180, height: 300, borderRadius: 8 }} className="skel" />}
         {!empty && !none && items && view === "timeline" && (
-          <Timeline key="tl" list={byYear} index={tlIndex} onIndex={(i) => setTlId(byYear[i]?.id ?? null)} onOpen={(id) => openPiece(id)} matchOf={matches ? (id) => matches.get(id) : undefined} statusLabel={statusLabel} layout={layout} />
+          <Timeline key="tl" list={byYear} index={tlIndex} onIndex={(i) => setTlId(byYear[i]?.id ?? null)} onOpen={(id) => openPiece(id)} matchOf={matches ? (id) => matches.get(id) : undefined} statusLabel={statusLabel} layout={layout} top={viewTop} />
         )}
         {!empty && !none && items && view === "wall" && (
           <Wall key="wall" list={ranked} ranked={!!matches} matchOf={matches ? (id) => matches.get(id) : undefined} onOpen={(id) => openPiece(id)}
-            selected={selecting ? selected! : undefined} onToggle={toggleSelected} layout={layout} />
+            selected={selecting ? selected! : undefined} onToggle={toggleSelected} layout={layout} top={viewTop} />
         )}
         {none && (
           <div className="inup" style={{ position: "absolute", left: "calc(var(--gl) + 16px)", right: "calc(var(--gr) + 16px)", top: "34%", textAlign: "center" }} data-testid="no-matches">

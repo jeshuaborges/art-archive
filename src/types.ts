@@ -92,3 +92,17 @@ export const emptyFilters = (): Filters => ({ values: {}, status: [], color: nul
 
 /** The removable chip for a non-default archived choice. */
 export const archivedChipLabel = (m: ArchivedMode) => (m === "only" ? "Only archived" : m === "include" ? "Including archived" : null);
+
+/**
+ * The small count beside the filter chips, only where it says something the
+ * screen doesn't: how many pieces a search or the filters left, or how many are
+ * archived. The plain whole archive gets no count (null).
+ */
+export function countLabel(o: { total: number | null; shown: number; searching: boolean; archived: ArchivedMode; filtered: boolean }): string | null {
+  const { total, shown } = o;
+  if (total == null) return null;
+  if (o.searching) return `${shown} CLOSE ${shown === 1 ? "MATCH" : "MATCHES"}`;
+  if (o.archived === "only") return o.filtered ? `${shown} OF ${total} ARCHIVED` : `${total} ARCHIVED`;
+  if (o.filtered && shown !== total) return `${shown} OF ${total}`;
+  return null;
+}

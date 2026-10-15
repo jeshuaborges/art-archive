@@ -35,7 +35,6 @@ export function paletteHas(palette: string[], swatch: string) {
   return palette.some((c) => { const x = hexToHsl(c); return x.s > 0.2 && x.l > 0.1 && x.l < 0.92 && hueDist(x.h, t.h) < 26; });
 }
 
-export const decadeOf = (y: number | null) => (y == null ? null : Math.floor(y / 10) * 10);
 
 export function yearLabel(a: Pick<Summary, "yearStart" | "yearEnd" | "circa">) {
   if (a.yearStart == null) return "Undated";

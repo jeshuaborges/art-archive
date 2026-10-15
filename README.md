@@ -20,10 +20,10 @@ A phone-first archive for fifty years of Anne Laddon's work: every original, its
 
 ## What it does
 
-- **Timeline**: scrub through the years on a draggable filmstrip, or jump to a decade. Swipe the hero image to step through pieces, and tap it to open the piece.
-- **Wall**: a two-column masonry grouped by decade, with sticky headers and a decade rail for jumping.
+- **Wall** (the default view; the app remembers your last choice): a two-column masonry grouped by year, newest first, with sticky year headers and a year index down the right edge: tap a year, or press and drag along it to scrub, with a bubble showing the year, how many works it has and its first piece. Pieces with no year are grouped as Undated at the end; "c. 2012" pieces sit under 2012.
+- **Timeline**: scrub through the pieces on a draggable filmstrip (the year shows under the first piece of each year), or move by year. Swipe the hero image to step through pieces, and tap it to open the piece. Years are navigated with a density ruler: one bar per year, as tall as that year's output, which you drag along (or tap) to move between years.
 - **One top row**: the Timeline/Wall toggle, an expanding search field, and filters.
-- **Either way up**: on a phone held sideways (or a tablet or desktop) the timeline puts the painting large on the left with the filmstrip under it and the label, decade jumps and Add work beside it; the wall grows to 3–6 columns; a piece shows its images on the left and details on the right. Rotating keeps your place. It fills the screen edge to edge from the home screen, with controls kept clear of the notch and home indicator.
+- **Either way up**: on a phone held sideways (or a tablet or desktop) the timeline puts the painting large on the left with the filmstrip under it and the label, year navigation and Add work beside it; the wall grows to 3–6 columns; a piece shows its images on the left and details on the right. Rotating keeps your place. It fills the screen edge to edge from the home screen, with controls kept clear of the notch and home indicator.
 - **Search by meaning**: try "warm sunsets over water". Results combine semantic vectors with full-text matching and show a match percentage.
 - **Filters**: medium, subjects, style, series (any field marked filterable), where the piece is, color (from each image's palette), a year range, and whether to show archived pieces (hide / show too / only). Active filters appear as removable chips.
 - **Piece view**:
@@ -92,7 +92,7 @@ This mode runs the UI from your working copy, so edits show instantly. `/api`, `
 
 ```bash
 npm run typecheck
-npm run test:unit    # layout (orientation, hero, filmstrip and wall sizing, keyboard inset), signed-out detection, phone preview sizes, fields and inventory numbers, Access JWT verification (people and service tokens), embeddings, palette, indexing steps and order, archive decisions, storage classes and previews, production search backend (fakes), MCP tool arguments
+npm run test:unit    # layout (orientation, hero, filmstrip and wall sizing, keyboard inset), year navigation (grouping, ruler bars and slots, rail rows and labels, carousel centring, count line), signed-out detection, phone preview sizes, fields and inventory numbers, Access JWT verification (people and service tokens), embeddings, palette, indexing steps and order, archive decisions, storage classes and previews, production search backend (fakes), MCP tool arguments
 npm run test:api     # 46 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
 npm run test:e2e     # 21 browser steps in Chromium at 390×844 with touch, on a freshly seeded archive
 npm test             # all of the above
