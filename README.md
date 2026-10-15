@@ -73,6 +73,21 @@ Local development is fully offline: local D1 and R2, the offline embedding model
 
 The sample works use real titles from anneladdon.com, but the images are generated stand-ins, and the years, sizes and statuses are placeholders.
 
+### Iterating against the real archive
+
+```bash
+npm run dev:prod     # Vite with hot reload on http://localhost:5174, using the live archive's data
+```
+
+This mode runs the UI from your working copy, so edits show instantly. `/api`, `/img` and `/mcp` go to the production Worker, authenticated with the importer's Access service token.
+
+- **Setup:** put the token in `.env.local`, which is gitignored and should be mode 600: `ARCHIVE_URL`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`. These are the same values as `art-archive-importer/.env`.
+- **Read-only by default:** the proxy refuses POST, PATCH, PUT and DELETE before they leave your machine. Set `ARCHIVE_ALLOW_WRITES=1` in `.env.local` only when you mean to change the live archive. Changes are then attributed to the service token, not to you.
+- **Launchers:** `.claude/launch.json` has three entries for the desktop app's browser pane:
+  - `archive-real-data` runs `dev:prod`.
+  - `archive-local` runs `dev`.
+  - `archive-local-hot-reload` runs `dev:ui`, which needs `archive-local` running too.
+
 ## Tests
 
 ```bash

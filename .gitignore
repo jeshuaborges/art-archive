@@ -6,3 +6,4 @@ dist/
 *.log
 tests/shots/_*
 .DS_Store
+.env.*

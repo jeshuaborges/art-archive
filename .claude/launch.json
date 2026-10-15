@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "archive-real-data",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:prod"],
+      "port": 5174
+    },
+    {
+      "name": "archive-local",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 8787
+    },
+    {
+      "name": "archive-local-hot-reload",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev:ui"],
+      "port": 5173
+    }
+  ]
+}
