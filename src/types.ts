@@ -24,6 +24,7 @@ export interface Summary {
   palette: string[];
   version: number;
   updatedAt: string;
+  archivedAt: string | null; // archived: out of sight, not deleted
   thumb: string | null;
   display: string | null;
   aspect: number | null;
@@ -47,6 +48,8 @@ export interface ImageDTO {
   palette: string[];
   sortOrder: number;
   createdAt: string;
+  archivedAt: string | null;
+  archivedBy: string | null;
   original: string;
   display: string;
   thumb: string;
@@ -56,8 +59,10 @@ export interface Artwork extends Omit<Summary, "thumb" | "display" | "aspect" | 
   aiDescription: string | null;
   coverImageId: string | null;
   createdAt: string;
-  images: ImageDTO[];
+  archivedBy: string | null;
+  images: ImageDTO[];          // archived images left out unless asked for
   cover: ImageDTO | null;
+  archivedImageCount: number;
 }
 
 export interface Config {
@@ -66,11 +71,18 @@ export interface Config {
   search: string;
 }
 
+/** Which archived records a read shows: none (default), both, or only them. */
+export type ArchivedMode = "exclude" | "include" | "only";
+
 export interface Filters {
   values: Record<string, string[]>; // filterable field key -> selected choices
   status: string[];
   color: string | null;
   years: [number, number] | null;
+  archived: ArchivedMode;
 }
 
-export const emptyFilters = (): Filters => ({ values: {}, status: [], color: null, years: null });
+export const emptyFilters = (): Filters => ({ values: {}, status: [], color: null, years: null, archived: "exclude" });
+
+/** The removable chip for a non-default archived choice. */
+export const archivedChipLabel = (m: ArchivedMode) => (m === "only" ? "Only archived" : m === "include" ? "Including archived" : null);

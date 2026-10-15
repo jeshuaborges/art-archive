@@ -1,18 +1,21 @@
 import { useMemo, useRef } from "react";
 import type { Summary } from "../types";
 import { decadeOf, mediumOf, pct, STATUS_COLOR, yearLabel } from "../util";
-import { IStack } from "./Icons";
+import { ICheck, IStack } from "./Icons";
 
 interface Props {
   list: Summary[];           // already filtered
   ranked: boolean;           // true when showing search results in relevance order
   matchOf?: (id: string) => number | undefined;
   onOpen: (id: string) => void;
+  /** When set, tiles select instead of opening (bulk unarchive). */
+  selected?: ReadonlySet<string>;
+  onToggle?: (id: string) => void;
 }
 
 type Section = { key: string; label: string; items: Summary[] };
 
-export function Wall({ list, ranked, matchOf, onOpen }: Props) {
+export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle }: Props) {
   const scroller = useRef<HTMLDivElement>(null);
   const sections = useMemo<Section[]>(() => {
     if (ranked) return [{ key: "best", label: "Best matches", items: list }];
@@ -57,12 +60,18 @@ export function Wall({ list, ranked, matchOf, onOpen }: Props) {
                       {col.map((a) => {
                         const m = matchOf?.(a.id);
                         const asp = Math.max(0.6, Math.min(1.7, a.aspect || 1));
+                        const sel = selected?.has(a.id);
                         return (
-                          <button key={a.id} className="press tilein" onClick={() => onOpen(a.id)} aria-label={`Open ${a.title || "Untitled"}`} data-testid="wall-tile"
+                          <button key={a.id} className="press tilein" onClick={() => (selected && onToggle ? onToggle(a.id) : onOpen(a.id))} data-testid="wall-tile"
+                            aria-label={selected ? `Select ${a.title || "Untitled"}` : `Open ${a.title || "Untitled"}`} aria-pressed={selected ? !!sel : undefined}
                             style={{ display: "block", width: "100%", padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)", animationDelay: `${Math.min(k++ * 40, 400)}ms` }}>
-                            <div style={{ position: "relative", aspectRatio: String(asp), borderRadius: 14, overflow: "hidden", background: "#23201C", boxShadow: "0 10px 24px rgba(0,0,0,.35)" }}>
+                            <div style={{ position: "relative", aspectRatio: String(asp), borderRadius: 14, overflow: "hidden", background: "#23201C", boxShadow: sel ? "0 0 0 3px var(--bg),0 0 0 5px var(--poppy)" : "0 10px 24px rgba(0,0,0,.35)", transition: "box-shadow .25s" }}>
                               {a.thumb ? <img src={a.thumb} alt="" loading="lazy" draggable={false} className="art-img" /> : <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 12, color: "var(--faint)" }}>No image yet</div>}
                               {ranked && m !== undefined && <span style={{ position: "absolute", left: 8, top: 8, height: 24, padding: "0 8px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(42,37,71,.92)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700 }}>{pct(m)}</span>}
+                              {a.archivedAt && !selected && <ArchivedBadge />}
+                              {selected && (
+                                <span aria-hidden style={{ position: "absolute", right: 8, top: 8, width: 26, height: 26, borderRadius: 99, display: "grid", placeItems: "center", background: sel ? "var(--poppy)" : "rgba(18,17,15,.6)", border: sel ? 0 : "2px solid rgba(243,239,232,.7)", color: "#1A110A", transition: "background .2s" }}>{sel && <ICheck size={14} />}</span>
+                              )}
                               {a.imageCount > 1 && <span style={{ position: "absolute", right: 8, bottom: 8, height: 22, padding: "0 7px", display: "flex", alignItems: "center", gap: 4, borderRadius: 99, background: "rgba(18,17,15,.72)", fontSize: 11, fontWeight: 600 }}><IStack />{a.imageCount}</span>}
                             </div>
                             <span className="clamp2" style={{ marginTop: 8, fontSize: 13, fontWeight: 600, lineHeight: 1.3 }}>{a.title || "Untitled"}</span>
@@ -91,5 +100,15 @@ export function Wall({ list, ranked, matchOf, onOpen }: Props) {
         </nav>
       )}
     </>
+  );
+}
+
+/** Small pill on an archived piece's tile. */
+export function ArchivedBadge({ style }: { style?: React.CSSProperties }) {
+  return (
+    <span className="mono" data-testid="archived-badge"
+      style={{ position: "absolute", right: 8, top: 8, height: 22, padding: "0 8px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(18,17,15,.8)", border: "1px solid var(--line-2)", color: "var(--text-2)", fontSize: 9.5, fontWeight: 600, letterSpacing: ".1em", ...style }}>
+      ARCHIVED
+    </span>
   );
 }

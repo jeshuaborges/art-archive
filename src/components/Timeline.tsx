@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Summary } from "../types";
 import { clamp, decadeOf, frameStyle, mediumOf, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
+import { ArchivedBadge } from "./Wall";
 
 const SP = 78; // px between thumbnails on the strip
 const WINDOW = 14;
@@ -140,6 +141,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel }:
               </div>
             );
           })}
+          {item.archivedAt && <ArchivedBadge style={{ left: 28, right: "auto", top: 0, height: 28, fontSize: 10.5 }} />}
           {match !== undefined && <span className="popin" style={{ position: "absolute", right: 28, top: 0, height: 28, padding: "0 10px", display: "flex", alignItems: "center", borderRadius: 99, background: "var(--lupine-deep)", color: "var(--lupine-soft)", fontSize: 12, fontWeight: 700 }}>{pct(match)} match</span>}
         </div>
       </div>

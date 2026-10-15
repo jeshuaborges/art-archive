@@ -8,19 +8,20 @@ A phone-first archive for fifty years of Anne Laddon's work: every original, its
 - **Wall**: a two-column masonry grouped by decade, with sticky headers and a decade rail for jumping.
 - **One top row**: the Timeline/Wall toggle, an expanding search field, and filters.
 - **Search by meaning**: try "warm sunsets over water". Results combine semantic vectors with full-text matching and show a match percentage.
-- **Filters**: medium, subjects, style, series (any field marked filterable), where the piece is, color (from each image's palette), and a year range. Active filters appear as removable chips.
+- **Filters**: medium, subjects, style, series (any field marked filterable), where the piece is, color (from each image's palette), a year range, and whether to show archived pieces (hide / show too / only). Active filters appear as removable chips.
 - **Piece view**:
   - Many images per piece, grouped as Finished, Progress, Studies and References, in a swipeable carousel.
   - "How it came together": the sequence from reference photo to finished work.
-  - Image options: make main image, change type, rename, download original, remove.
+  - Image options: make main image, change type, rename, download original, archive, remove. Archived images sit under an "Archived" tab.
   - More like this.
 - **Editing on the phone**: every field is generated from the flexible field definitions. Saves use optimistic concurrency, and every save is kept as a revision.
 - **Uploads**: from the camera, photo library or files, with progress shown. The original is stored untouched. Display and thumbnail versions and a color palette are made on the phone before upload.
 - **Add work**: photograph a piece and it opens ready to fill in.
+- **Archive**: put a piece or an image out of sight without deleting it, e.g. sample data uploaded to try things out. Archived pieces leave the timeline, wall, search and "More like this", show an "Archived" badge, and come back with one tap (from the piece, or several at once from Filters → Only archived → Select to unarchive). Archiving the main image hands that role to the next image; bringing it back doesn't take it back.
 - **Durable by design**:
   - A `record.json` sidecar sits next to each piece's images in R2.
   - A nightly JSON export of the whole database goes to `backups/` in R2.
-  - Deletes are soft.
+  - Deletes are soft, and archiving is separate and reversible. Both keep everything in the export and `record.json`.
 - **MCP endpoint** (`/mcp`): Claude can search, read and update the archive.
 
 ## Architecture
@@ -53,8 +54,8 @@ The sample works use real titles from anneladdon.com, but the images are generat
 
 ```bash
 npm run typecheck
-npm run test:unit    # fields, Access JWT verification, embeddings, palette, indexing steps and order, production search backend (fakes)
-npm run test:api     # 30 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
+npm run test:unit    # fields, Access JWT verification, embeddings, palette, indexing steps and order, archive decisions, production search backend (fakes)
+npm run test:api     # 41 integration tests against three fresh `wrangler dev` servers (dev / no-auth / Access)
 npm run test:e2e     # 21 browser steps in Chromium at 390×844 with touch, on a freshly seeded archive
 npm test             # all of the above
 ```
@@ -81,11 +82,17 @@ No secrets are required: uploads go through the R2 binding, so there are no R2 A
 
 ## Data model
 
-- `artworks`: catalog number (`YEAR-NNN` or `undated-NNN`, fixed at creation), title, year range, circa, status, `attrs` JSON, palette, AI description, cover image, version.
+- `artworks`: catalog number (`YEAR-NNN` or `undated-NNN`, fixed at creation), title, year range, circa, status, `attrs` JSON, palette, AI description, cover image, version, `archived_at`/`archived_by` (migration 0003).
 - `field_defs`: the schema for `attrs`. Add fields with `POST /api/fields`; the edit form and filters pick them up automatically.
-- `images`: kind (`work`, `progress`, `study`, `reference`), label, R2 keys for the original/display/thumb, SHA-256 for duplicate detection, size, palette.
+- `images`: kind (`work`, `progress`, `study`, `reference`), label, R2 keys for the original/display/thumb, SHA-256 for duplicate detection, size, palette, `archived_at`/`archived_by`.
 - `artwork_revisions`: a full snapshot on every change, with who made it.
-- `artworks_fts`, `embeddings`: derived, rebuilt from the records.
+- `artworks_fts`, `embeddings`: derived, rebuilt from the records. Archived pieces stay in both (and in Vectorize); search leaves them out at query time, so unarchiving makes a piece searchable again at once.
+
+## API notes
+
+- Archive state: `POST /api/artworks/:id/archive` and `/unarchive`, the same for `/api/images/:id`. Bulk: `POST /api/artworks/archive` or `/unarchive` with `{ "ids": [...] }` (ids or catalog numbers, up to 500), answering `{ changed, unchanged, notFound }`. Archiving a piece is a new version with a revision; repeating it changes nothing. `npm run seed` prints the bulk command for the works it added.
+- `GET /api/artworks` and `GET /api/search` take `archived=exclude` (default), `include` or `only`. `GET /api/artworks/:id` always returns the piece, archived or not (`archivedAt`); there `archived` chooses its images, and `archivedImageCount` says how many are hidden.
+- MCP: `search_artworks` takes `includeArchived`; `get_artwork` shows `archivedAt` for the piece and each image.
 
 ## Known limits / next steps
 

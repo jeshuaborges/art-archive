@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { prepareImage } from "./imageprep";
 import type { Config, FieldDef, Filters, Summary } from "./types";
-import { emptyFilters } from "./types";
+import { archivedChipLabel, emptyFilters } from "./types";
 import { paletteHas, save, STATUS_COLOR, store, SWATCHES, vibrate } from "./util";
 import { TopBar } from "./components/TopBar";
 import { Timeline } from "./components/Timeline";
@@ -10,7 +10,7 @@ import { Wall } from "./components/Wall";
 import { FilterSheet } from "./components/FilterSheet";
 import { PieceView, type PendingUpload } from "./components/PieceView";
 import { ROLES, UploadSheet } from "./components/UploadSheet";
-import { ICheck, IClose, IPlus } from "./components/Icons";
+import { IArchive, ICheck, IClose, IPlus } from "./components/Icons";
 
 type View = "timeline" | "wall";
 
@@ -33,6 +33,8 @@ export function App() {
   const [pending, setPending] = useState<PendingUpload[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>();
+  const [selected, setSelected] = useState<Set<string> | null>(null); // bulk unarchive, in the "only archived" wall
+  const archived = filters.archived;
 
   const showToast = useCallback((m: string) => {
     setToast(m); clearTimeout(toastTimer.current);
@@ -40,10 +42,20 @@ export function App() {
   }, []);
   const setView = (v: View) => { setViewState(v); save("view", v); };
 
+  // the list follows the archived choice; only the latest request may land
+  const listReq = useRef(0);
   const refresh = useCallback(async () => {
-    try { setItems(await api.list()); setFields(await api.fields()); }
+    const n = ++listReq.current;
+    try { const l = await api.list(archived); if (n === listReq.current) setItems(l); setFields(await api.fields()); }
     catch (e) { showToast(e instanceof Error ? e.message : "Couldn't refresh"); }
-  }, [showToast]);
+  }, [archived, showToast]);
+  const firstArchived = useRef(true);
+  useEffect(() => {
+    if (firstArchived.current) { firstArchived.current = false; return; }
+    setSelected(null);
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [archived]);
 
   useEffect(() => {
     Promise.all([api.config(), api.fields(), api.list()])
@@ -82,13 +94,13 @@ export function App() {
     const ctl = new AbortController();
     setSearching(true);
     const t = setTimeout(() => {
-      api.search(term, ctl.signal)
+      api.search(term, ctl.signal, archived)
         .then((r) => setMatches(new Map(r.results.map((x) => [x.id, x.match]))))
         .catch((e) => { if (e?.name !== "AbortError") showToast("Search isn't available right now"); })
         .finally(() => setSearching(false));
     }, 220);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [q, showToast]);
+  }, [q, archived, showToast]);
 
   const bounds = useMemo<[number, number]>(() => {
     const ys = (items || []).map((a) => a.yearStart).filter((y): y is number => y != null);
@@ -124,6 +136,21 @@ export function App() {
   filters.status.forEach((s) => chips.push({ label: statusLabel(s), dot: STATUS_COLOR[s], remove: () => setFilters((f) => ({ ...f, status: f.status.filter((x) => x !== s) })) }));
   if (filters.color) chips.push({ label: SWATCHES.find((w) => w[0] === filters.color)?.[1] || "Color", dot: filters.color, remove: () => setFilters((f) => ({ ...f, color: null })) });
   if (filters.years) chips.push({ label: `${filters.years[0]}–${filters.years[1]}`, remove: () => setFilters((f) => ({ ...f, years: null })) });
+  const archivedChip = archivedChipLabel(archived);
+  if (archivedChip) chips.push({ label: archivedChip, remove: () => setFilters((f) => ({ ...f, archived: "exclude" })) });
+
+  // --------------------------------------------------------------- bulk unarchive
+  const selecting = !!selected && archived === "only" && view === "wall";
+  const toggleSelected = (id: string) => { vibrate(4); setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; }); };
+  const unarchiveSelected = async () => {
+    if (!selected?.size) return;
+    try {
+      const r = await api.unarchiveMany([...selected]);
+      const n = r.changed.length;
+      showToast(`${n === 1 ? "1 piece" : `${n} pieces`} back in the archive`); vibrate(10);
+      setSelected(null); refresh();
+    } catch (e) { showToast(e instanceof Error ? e.message : "Couldn't unarchive"); }
+  };
 
   // --------------------------------------------------------------- uploads
   const startUploads = useCallback(async (artworkId: string, files: File[], roleIdx: number, firstIsCover: boolean) => {
@@ -167,7 +194,8 @@ export function App() {
 
   const cur = byYear[tlIndex];
   const glow = cur?.palette?.length ? cur.palette : ["#3A2F5C", "#5C3A2A"];
-  const empty = items !== null && items.length === 0;
+  const empty = items !== null && items.length === 0 && archived !== "only";
+  const noneArchived = items !== null && items.length === 0 && archived === "only";
   const none = items !== null && items.length > 0 && filtered.length === 0;
 
   return (
@@ -187,7 +215,7 @@ export function App() {
               </button>
             ))}
             <span className="mono" style={{ fontSize: 11, letterSpacing: ".08em", color: "var(--muted)", whiteSpace: "nowrap", paddingLeft: 4 }} data-testid="count-label">
-              {items === null ? "LOADING…" : matches ? `${filtered.length} CLOSE ${filtered.length === 1 ? "MATCH" : "MATCHES"}` : chips.length ? `${filtered.length} OF ${items.length} WORKS` : `${items.length} ${items.length === 1 ? "WORK" : "WORKS"}`}
+              {items === null ? "LOADING…" : matches ? `${filtered.length} CLOSE ${filtered.length === 1 ? "MATCH" : "MATCHES"}` : archived === "only" ? (chips.length > 1 ? `${filtered.length} OF ${items.length} ARCHIVED` : `${items.length} ARCHIVED`) : chips.length ? `${filtered.length} OF ${items.length} WORKS` : `${items.length} ${items.length === 1 ? "WORK" : "WORKS"}`}
             </span>
           </div>
         </div>
@@ -197,13 +225,21 @@ export function App() {
           <Timeline key="tl" list={byYear} index={tlIndex} onIndex={(i) => setTlId(byYear[i]?.id ?? null)} onOpen={(id) => openPiece(id)} matchOf={matches ? (id) => matches.get(id) : undefined} statusLabel={statusLabel} />
         )}
         {!empty && !none && items && view === "wall" && (
-          <Wall key="wall" list={ranked} ranked={!!matches} matchOf={matches ? (id) => matches.get(id) : undefined} onOpen={(id) => openPiece(id)} />
+          <Wall key="wall" list={ranked} ranked={!!matches} matchOf={matches ? (id) => matches.get(id) : undefined} onOpen={(id) => openPiece(id)}
+            selected={selecting ? selected! : undefined} onToggle={toggleSelected} />
         )}
         {none && (
           <div className="inup" style={{ position: "absolute", left: 32, right: 32, top: "34%", textAlign: "center" }} data-testid="no-matches">
             <div className="display" style={{ fontSize: 26, fontWeight: 700 }}>Nothing matches yet</div>
             <p style={{ margin: "10px 0 22px", fontSize: 15, lineHeight: 1.5, color: "var(--muted)" }}>Try fewer filters or describe the painting differently.</p>
             <button className="btn btn-light press" onClick={() => { setQ(""); setFilters(emptyFilters()); }}>Clear search &amp; filters</button>
+          </div>
+        )}
+        {noneArchived && (
+          <div className="inup" style={{ position: "absolute", left: 32, right: 32, top: "30%", textAlign: "center" }} data-testid="none-archived">
+            <div className="display" style={{ fontSize: 26, fontWeight: 700 }}>Nothing is archived</div>
+            <p style={{ margin: "10px 0 22px", fontSize: 15, lineHeight: 1.5, color: "var(--muted)" }}>Archive a piece from its page to put it out of sight without removing it.</p>
+            <button className="btn btn-light press" onClick={() => setFilters((f) => ({ ...f, archived: "exclude" }))}>Back to the archive</button>
           </div>
         )}
         {empty && (
@@ -213,10 +249,31 @@ export function App() {
           </div>
         )}
 
-        <button className="press" onClick={() => { setUpload({ mode: "new", roleIdx: 3 }); setSheet("upload"); }} data-testid="add-work"
-          style={{ position: "absolute", left: "50%", bottom: "calc(26px + env(safe-area-inset-bottom))", zIndex: 8, transform: "translateX(-50%)", height: 52, padding: "0 22px 0 18px", borderRadius: 999, border: 0, background: "var(--poppy)", color: "#1A110A", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 14px 34px rgba(255,138,76,.38)" }}>
-          <IPlus />Add work
-        </button>
+        {archived !== "only" && (
+          <button className="press" onClick={() => { setUpload({ mode: "new", roleIdx: 3 }); setSheet("upload"); }} data-testid="add-work"
+            style={{ position: "absolute", left: "50%", bottom: "calc(26px + env(safe-area-inset-bottom))", zIndex: 8, transform: "translateX(-50%)", height: 52, padding: "0 22px 0 18px", borderRadius: 999, border: 0, background: "var(--poppy)", color: "#1A110A", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 14px 34px rgba(255,138,76,.38)" }}>
+            <IPlus />Add work
+          </button>
+        )}
+        {archived === "only" && !!items?.length && !selecting && (
+          <button className="press" onClick={() => { setView("wall"); setSelected(new Set()); vibrate(5); }} data-testid="select-archived"
+            style={{ position: "absolute", left: "50%", bottom: "calc(26px + env(safe-area-inset-bottom))", zIndex: 8, transform: "translateX(-50%)", height: 52, padding: "0 22px 0 18px", borderRadius: 999, border: "1px solid var(--line-2)", background: "var(--glass)", backdropFilter: "blur(14px)", color: "var(--text)", fontSize: 15, fontWeight: 700, display: "flex", alignItems: "center", gap: 8, whiteSpace: "nowrap", boxShadow: "0 14px 34px rgba(0,0,0,.45)" }}>
+            <IArchive />Select to unarchive
+          </button>
+        )}
+        {selecting && (
+          <div className="inup" data-testid="select-bar"
+            style={{ position: "absolute", left: 16, right: 16, bottom: "calc(20px + env(safe-area-inset-bottom))", zIndex: 8, display: "flex", gap: 10 }}>
+            <button className="btn btn-ghost press" style={{ background: "var(--bg-2)" }} onClick={() => setSelected(null)}>Cancel</button>
+            {selected!.size < filtered.length
+              ? <button className="btn btn-ghost press" style={{ background: "var(--bg-2)" }} onClick={() => setSelected(new Set(filtered.map((a) => a.id)))}>All</button>
+              : <button className="btn btn-ghost press" style={{ background: "var(--bg-2)" }} onClick={() => setSelected(new Set())}>None</button>}
+            <button className="btn press" disabled={!selected!.size} onClick={unarchiveSelected} data-testid="unarchive-selected"
+              style={{ flex: 1, background: selected!.size ? "var(--poppy)" : "#8A847A", color: "#1A110A", transition: "background .3s" }}>
+              {selected!.size ? `Unarchive ${selected!.size}` : "Tap pieces to select"}
+            </button>
+          </div>
+        )}
       </div>
 
       <PieceView id={detail} reloadKey={reloadKey} startEditing={editNew} fields={fields} statuses={config?.statuses || []} summaries={items || []} pending={pending}

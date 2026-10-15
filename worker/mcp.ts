@@ -11,19 +11,20 @@ const PROTOCOL = "2025-06-18";
 const TOOLS = [
   {
     name: "search_artworks",
-    description: "Search Anne Laddon's archive by words or meaning (e.g. 'warm sunsets over water'). Optional filters narrow by medium, status or year range.",
+    description: "Search Anne Laddon's archive by words or meaning (e.g. 'warm sunsets over water'). Optional filters narrow by medium, status or year range. Archived pieces (put out of sight, e.g. sample data) are left out unless includeArchived is true.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "What to look for. Leave empty to list everything that matches the filters." },
         medium: { type: "string" }, status: { type: "string", enum: Object.keys(STATUS_LABELS) },
         yearFrom: { type: "integer" }, yearTo: { type: "integer" }, limit: { type: "integer", minimum: 1, maximum: 100 },
+        includeArchived: { type: "boolean", description: "Also return archived pieces (marked archived: true)." },
       },
     },
   },
   {
     name: "get_artwork",
-    description: "Get one artwork with all of its fields and images, by id or catalog number (e.g. 2019-001).",
+    description: "Get one artwork with all of its fields and images, by id or catalog number (e.g. 2019-001). Shows whether the piece or any image is archived (archivedAt).",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
   },
   {
@@ -54,10 +55,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, b
   switch (name) {
     case "search_artworks": {
       const limit = Math.min(100, Math.max(1, Number(args.limit) || 20));
-      let rows = await listSummaries(env);
+      const archived = args.includeArchived === true ? "include" : "exclude";
+      let rows = await listSummaries(env, archived);
       let matchById: Map<string, number> | null = null;
       if (typeof args.query === "string" && args.query.trim()) {
-        const r = await search(env, args.query, 100);
+        const r = await search(env, args.query, 100, archived);
         matchById = new Map(r.results.map((x) => [x.id, x.match]));
         rows = rows.filter((x) => matchById!.has(x.id));
       }
@@ -69,11 +71,12 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, b
       return text(rows.slice(0, limit).map((x) => ({
         id: x.id, catalogId: x.catalogId, title: x.title, year: x.yearStart, status: STATUS_LABELS[x.status],
         medium: x.attrs.medium, subjects: x.attrs.subjects, images: x.imageCount, match: matchById?.get(x.id),
+        ...(x.archivedAt ? { archived: true } : {}),
       })));
     }
     case "get_artwork": {
-      const a = await getArtwork(env, String(args.id || ""));
-      return text({ ...a, images: a.images.map((i) => ({ id: i.id, kind: i.kind, role: i.role, caption: i.caption, url: i.display })) });
+      const a = await getArtwork(env, String(args.id || ""), "include");
+      return text({ ...a, images: a.images.map((i) => ({ id: i.id, kind: i.kind, role: i.role, caption: i.caption, url: i.display, archivedAt: i.archivedAt })) });
     }
     case "list_fields":
       return text(await loadFieldDefs(env.DB));

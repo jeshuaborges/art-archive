@@ -6,6 +6,9 @@
  *
  *   npm run dev            # in one terminal
  *   npm run seed           # in another (BASE=http://localhost:8787 by default)
+ *
+ * At the end it prints a bulk-archive command for the works it added, so sample
+ * data can be put out of sight (reversibly) once it has served its purpose.
  */
 import sharp from "sharp";
 
@@ -114,6 +117,7 @@ const BACK = (aspect) => svg(aspect, (h) => `<rect width="100" height="${h}" fil
 const existing = await api("/api/artworks");
 if (existing.length && !process.env.FORCE) { console.log(`Archive already has ${existing.length} works; set FORCE=1 to add the samples anyway.`); process.exit(0); }
 
+const seeded = [];
 for (const w of WORKS) {
   const { xml } = svg(w.aspect, w.art);
   const master = await sharp(Buffer.from(xml)).jpeg({ quality: 92 }).toBuffer();
@@ -139,6 +143,10 @@ for (const w of WORKS) {
     await upload(a.id, under, `${a.catalogId}-underpainting.jpg`, { kind: "progress", role: "Underpainting" });
     await upload(a.id, half, `${a.catalogId}-halfway.jpg`, { kind: "progress", role: "Halfway" });
   }
+  seeded.push(a.id);
   console.log(`seeded ${a.catalogId}  ${w.title}`);
 }
 console.log("done");
+// Sample works can be put out of sight later (reversibly) with one bulk archive:
+// (Behind Cloudflare Access, send it with `cloudflared access curl` instead of curl.)
+console.log(`\nTo archive these samples later:\n  curl -X POST ${BASE}/api/artworks/archive -H 'content-type: application/json' -d '${JSON.stringify({ ids: seeded })}'`);

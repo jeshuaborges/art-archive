@@ -17,4 +17,5 @@ export const IMore = ({ size = 20 }: P) => <svg {...base(size)} strokeWidth={2.6
 export const IDownload = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></svg>;
 export const IStar = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9 6.8 19.6l1-5.8L3.5 9.7l5.9-.9z" /></svg>;
 export const ITrash = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>;
+export const IArchive = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><rect x="3" y="4" width="18" height="5" rx="1.5" /><path d="M5 9v10h14V9M10 13h4" /></svg>;
 export const ITag = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M3 12V4h8l10 10-8 8z" /><circle cx="7.5" cy="8.5" r="1.4" /></svg>;

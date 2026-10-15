@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import type { Artwork, FieldDef, ImageDTO, ImageKind, Summary } from "../types";
 import { clamp, KIND_META, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
-import { IBack, IDownload, IMore, IPlus, ISpark, IStar, ITag, ITrash, ICheck } from "./Icons";
+import { IArchive, IBack, IDownload, IMore, IPlus, ISpark, IStar, ITag, ITrash, ICheck } from "./Icons";
 import { ROLES } from "./UploadSheet";
 
 export interface PendingUpload { tempId: string; artworkId: string; previewUrl: string; kind: ImageKind; role: string; progress: number; error?: string }
@@ -23,6 +23,7 @@ interface Props {
 }
 
 type Draft = { title: string; yearStart: string; yearEnd: string; circa: boolean; status: string; attrs: Record<string, unknown> };
+type Tab = "all" | ImageKind | "archived";
 const KIND_TABS: ("all" | ImageKind)[] = ["all", "work", "progress", "study", "reference"];
 
 function toDraft(a: Artwork): Draft {
@@ -35,7 +36,8 @@ export function PieceView(p: Props) {
   const { id } = p;
   const [art, setArt] = useState<Artwork | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [kind, setKind] = useState<"all" | ImageKind>("all");
+  const [kind, setKind] = useState<Tab>("all");
+  const [archivedImages, setArchivedImages] = useState<ImageDTO[]>([]);
   const [idx, setIdx] = useState(0);
   const [cdx, setCdx] = useState(0);
   const [cDrag, setCDrag] = useState(false);
@@ -87,10 +89,21 @@ export function PieceView(p: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [id, editing, menu, p]);
 
+  // archived images are read on demand, for the "Archived" tab
+  const archivedCount = art?.archivedImageCount || 0;
+  useEffect(() => {
+    if (kind !== "archived" || !art) return;
+    if (!archivedCount) { setKind("all"); setIdx(0); setArchivedImages([]); return; }
+    let live = true;
+    api.get(art.id, "only").then((a) => { if (live) setArchivedImages(a.images); }).catch(() => {});
+    return () => { live = false; };
+  }, [kind, art, archivedCount]);
+
   const pending = p.pending.filter((u) => u.artworkId === art?.id);
-  const images = useMemo(() => (art ? art.images.filter((i) => kind === "all" || i.kind === kind) : []), [art, kind]);
-  const pend = pending.filter((u) => kind === "all" || u.kind === kind);
-  const slideCount = images.length + pend.length + 1; // + "add" slide
+  const images = useMemo(() => (art ? (kind === "archived" ? archivedImages : art.images.filter((i) => kind === "all" || i.kind === kind)) : []), [art, kind, archivedImages]);
+  const pend = kind === "archived" ? [] : pending.filter((u) => kind === "all" || u.kind === kind);
+  const shownCount = images.length + pend.length;
+  const slideCount = shownCount + (kind === "archived" ? 0 : 1); // + "add" slide
   const safeIdx = clamp(idx, 0, slideCount - 1);
   const curImage: ImageDTO | undefined = images[safeIdx];
 
@@ -204,6 +217,16 @@ export function PieceView(p: Props) {
     } finally { setSaving(false); }
   };
 
+  const setPieceArchived = async (archive: boolean) => {
+    if (!art) return;
+    try {
+      const a = await (archive ? api.archive(art.id) : api.unarchive(art.id));
+      setArt(a); if (!changes) cancelEdit();
+      p.toast(archive ? "Archived · hidden from browsing and search" : "Back in the archive"); vibrate(10);
+      p.onChanged();
+    } catch (e) { p.toast(e instanceof Error ? e.message : "Couldn't change that"); }
+  };
+
   const removeArtwork = async () => {
     if (!art) return;
     try { await api.remove(art.id); p.toast("Removed from the archive"); p.onChanged(); p.onClose(); }
@@ -236,16 +259,16 @@ export function PieceView(p: Props) {
             <div onPointerDown={cDown} onPointerMove={cMove} onPointerUp={cUp} onPointerCancel={cUp} data-testid="carousel"
               style={{ position: "relative", height: 330, overflow: "hidden", touchAction: "pan-y" }}>
               <div style={{ display: "flex", height: "100%", transform: `translateX(calc(${-safeIdx * 100}% + ${cdx}px))`, transition: cDrag ? "none" : "transform .5s var(--ease-out)" }}>
-                {images.map((im) => <Slide key={im.id} src={im.display} aspect={im.width && im.height ? im.width / im.height : asp} label={`${KIND_META[im.kind].short} · ${im.role || KIND_META[im.kind].label}`} color={KIND_META[im.kind].color} cover={im.id === art.coverImageId} />)}
+                {images.map((im) => <Slide key={im.id} src={im.display} aspect={im.width && im.height ? im.width / im.height : asp} label={`${KIND_META[im.kind].short} · ${im.role || KIND_META[im.kind].label}${im.archivedAt ? " · archived" : ""}`} color={KIND_META[im.kind].color} cover={im.id === art.coverImageId} />)}
                 {pend.map((u) => <Slide key={u.tempId} src={u.previewUrl} aspect={asp} label={`${KIND_META[u.kind].short} · ${u.role}`} color={KIND_META[u.kind].color} progress={u.progress} error={u.error} />)}
-                <div style={{ flex: "none", width: "100%", height: "100%", display: "grid", placeItems: "center" }}>
+                {kind !== "archived" && <div style={{ flex: "none", width: "100%", height: "100%", display: "grid", placeItems: "center" }}>
                   <button className="press" onClick={() => p.onAddImages(art.id, kind === "all" || kind === "work" ? 4 : ROLES.findIndex((r) => r.kind === kind))} data-testid="add-image-slide"
                     style={{ width: 220, height: 260, borderRadius: 22, border: "2px dashed rgba(243,239,232,.25)", background: "rgba(255,255,255,.02)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "var(--text)" }}>
                     <span style={{ width: 56, height: 56, borderRadius: 99, background: "var(--lupine-deep)", color: "var(--lupine-soft)", display: "grid", placeItems: "center" }}><IPlus size={24} /></span>
                     <span style={{ fontSize: 15, fontWeight: 600 }}>Add images</span>
                     <span style={{ fontSize: 12, color: "var(--muted)", textAlign: "center", padding: "0 20px", lineHeight: 1.4 }}>Studies, progress, references, details — originals stay full size</span>
                   </button>
-                </div>
+                </div>}
               </div>
               {curImage && (
                 <button className="icon-btn press" aria-label="Image options" onClick={() => setMenu("main")} data-testid="image-menu"
@@ -254,7 +277,7 @@ export function PieceView(p: Props) {
             </div>
             <div style={{ display: "flex", justifyContent: "center", gap: 6, padding: "12px 0 4px" }}>
               {Array.from({ length: slideCount }).map((_, i) => (
-                <button key={i} aria-label={i < slideCount - 1 ? `Image ${i + 1}` : "Add images"} onClick={() => setIdx(i)}
+                <button key={i} aria-label={i < shownCount ? `Image ${i + 1}` : "Add images"} onClick={() => setIdx(i)}
                   style={{ width: i === safeIdx ? 22 : 7, height: 7, padding: 0, border: 0, borderRadius: 9, background: i === safeIdx ? "var(--text)" : "rgba(243,239,232,.3)", transition: "width .35s cubic-bezier(.3,1.3,.5,1), background .3s" }} />
               ))}
             </div>
@@ -265,12 +288,28 @@ export function PieceView(p: Props) {
                     {k !== "all" && <span className="dot" style={{ background: KIND_META[k].color, width: 7, height: 7 }} />}{k === "all" ? "All" : KIND_META[k].plural}<span className="n">{kindCounts[k] || 0}</span>
                   </button>
                 ))}
+                {archivedCount > 0 && (
+                  <button role="tab" aria-selected={kind === "archived"} className="chip press" style={{ height: 36, borderStyle: "dashed" }} onClick={() => { setKind("archived"); setIdx(0); }} data-testid="archived-images-tab">
+                    <IArchive size={13} />Archived<span className="n">{archivedCount}</span>
+                  </button>
+                )}
               </div>
             </div>
 
             {/* details */}
             <div style={{ padding: "18px 20px 0" }}>
               <div className="mono" style={{ fontSize: 11, letterSpacing: ".14em", color: "#FF9A5C" }}>NO. {art.catalogId}</div>
+              {art.archivedAt && (
+                <div className="fadein" data-testid="archived-banner"
+                  style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12, padding: "10px 10px 10px 14px", borderRadius: 16, background: "var(--surface)", border: "1px solid var(--line-2)" }}>
+                  <span style={{ color: "var(--muted)", flex: "none" }}><IArchive /></span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="mono" style={{ fontSize: 10.5, letterSpacing: ".12em", color: "var(--text)" }}>ARCHIVED</div>
+                    <div style={{ marginTop: 2, fontSize: 13, lineHeight: 1.35, color: "var(--muted)" }}>Hidden from browsing and search. Nothing is deleted.</div>
+                  </div>
+                  <button className="btn btn-light press" style={{ height: 40, padding: "0 14px", fontSize: 14 }} onClick={() => setPieceArchived(false)} data-testid="unarchive-piece">Unarchive</button>
+                </div>
+              )}
               {!editing && (
                 <div className="fadein">
                   <h2 className="display" style={{ margin: "6px 0 0", fontSize: 28, lineHeight: 1.08, fontWeight: 700 }}>{art.title || "Untitled"}</h2>
@@ -316,7 +355,11 @@ export function PieceView(p: Props) {
                   {p.fields.filter((f) => !f.archived).map((f) => (
                     <FieldEditor key={f.key} f={f} value={draft.attrs[f.key]} onChange={(v) => setAttr(f.key, v)} error={issues[f.key]} />
                   ))}
-                  <div style={{ marginTop: 6, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.08)" }}>
+                  <div style={{ marginTop: 6, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.08)", display: "flex", flexDirection: "column", gap: 10 }}>
+                    <button className="btn btn-ghost press" style={{ width: "100%", height: 48 }} onClick={() => setPieceArchived(!art.archivedAt)} data-testid="archive-piece">
+                      <IArchive />{art.archivedAt ? "Unarchive piece" : "Archive piece"}
+                    </button>
+                    {!art.archivedAt && <div style={{ marginTop: -2, fontSize: 12.5, lineHeight: 1.45, color: "var(--muted)", textAlign: "center" }}>Puts it out of sight, e.g. sample data. Show archived pieces in Filters to bring it back.</div>}
                     {!confirmDelete
                       ? <button className="btn btn-danger press" style={{ width: "100%", height: 48 }} onClick={() => setConfirmDelete(true)}><ITrash />Remove from archive</button>
                       : <div className="inup" style={{ display: "flex", gap: 10 }}>
@@ -393,7 +436,7 @@ export function PieceView(p: Props) {
       <div style={{ position: "absolute", left: 0, right: 0, top: 0, zIndex: 3, display: "flex", alignItems: "center", justifyContent: "space-between", padding: "calc(14px + env(safe-area-inset-top)) 12px 10px", background: "linear-gradient(180deg,var(--bg-2) 55%,rgba(18,17,15,0))" }}>
         <button className="icon-btn press" aria-label="Back" onClick={() => { if (editing && changes && !confirm("Discard your changes?")) return; cancelEdit(); p.onClose(); }} data-testid="back"><IBack /></button>
         <span className="mono" style={{ fontSize: 11, letterSpacing: ".12em", color: "var(--muted)" }}>
-          {art ? (safeIdx < images.length + pend.length ? `${safeIdx + 1} / ${images.length + pend.length} ${kind === "all" ? "IMAGES" : KIND_META[kind].plural.toUpperCase()}` : "ADD IMAGES") : ""}
+          {art ? (safeIdx < shownCount ? `${safeIdx + 1} / ${shownCount} ${kind === "all" ? "IMAGES" : kind === "archived" ? "ARCHIVED" : KIND_META[kind].plural.toUpperCase()}` : "ADD IMAGES") : ""}
         </span>
         <button className="press" onClick={editing ? save : startEdit} disabled={!art || saving} data-testid="edit-toggle"
           style={{ height: 44, minWidth: 72, padding: "0 16px", borderRadius: 999, border: 0, background: editing ? "var(--lupine)" : "rgba(36,33,30,.8)", color: editing ? "#15121F" : "var(--text)", fontSize: 14, fontWeight: 700, transition: "background .3s, color .3s" }}>
@@ -415,7 +458,18 @@ export function PieceView(p: Props) {
           <div className="scrim" style={{ opacity: 1, zIndex: 40 }} onClick={() => setMenu(null)} aria-hidden />
           <div className="inup" role="dialog" aria-label="Image options" data-testid="image-options"
             style={{ position: "absolute", left: 12, right: 12, bottom: "calc(12px + env(safe-area-inset-bottom))", zIndex: 41, borderRadius: 24, background: "var(--surface)", border: "1px solid var(--line)", padding: 10 }}>
-            {menu === "main" && (
+            {menu === "main" && curImage.archivedAt && (
+              <>
+                <div style={{ padding: "8px 10px 12px", display: "flex", alignItems: "center", gap: 12 }}>
+                  <img src={curImage.thumb} alt="" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8, opacity: 0.7 }} />
+                  <div><div style={{ fontWeight: 600 }}>{curImage.role || KIND_META[curImage.kind].label}</div><div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>ARCHIVED · {KIND_META[curImage.kind].short}</div></div>
+                </div>
+                <MenuItem icon={<IArchive />} label="Unarchive image" onClick={() => imageAction(() => api.unarchiveImage(curImage.id), "Image back on this piece").then(() => setIdx((i) => Math.max(0, i - 1)))} testId="unarchive-image" />
+                <a href={`${curImage.original}?download=1`} style={{ textDecoration: "none" }}><MenuItem icon={<IDownload />} label="Download original" onClick={() => setMenu(null)} /></a>
+                <MenuItem icon={<ITrash />} label="Remove image" danger onClick={() => setMenu("delete")} />
+              </>
+            )}
+            {menu === "main" && !curImage.archivedAt && (
               <>
                 <div style={{ padding: "8px 10px 12px", display: "flex", alignItems: "center", gap: 12 }}>
                   <img src={curImage.thumb} alt="" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8 }} />
@@ -425,6 +479,8 @@ export function PieceView(p: Props) {
                 <MenuItem icon={<ITag />} label="Change what it is" onClick={() => setMenu("kind")} />
                 <MenuItem icon={<ITag />} label="Rename label" onClick={() => { setLabelText(curImage.role); setMenu("label"); }} />
                 <a href={`${curImage.original}?download=1`} style={{ textDecoration: "none" }}><MenuItem icon={<IDownload />} label="Download original" onClick={() => setMenu(null)} /></a>
+                <MenuItem icon={<IArchive />} label="Archive image" testId="archive-image"
+                  onClick={() => imageAction(() => api.archiveImage(curImage.id), "Image archived · out of the carousel").then(() => setIdx((i) => Math.max(0, i - 1)))} />
                 <MenuItem icon={<ITrash />} label="Remove image" danger onClick={() => setMenu("delete")} />
               </>
             )}
@@ -501,9 +557,9 @@ function Row({ k, v, dot, multiline, faint }: { k: string; v: string; dot?: stri
   );
 }
 
-function MenuItem({ icon, label, onClick, danger }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+function MenuItem({ icon, label, onClick, danger, testId }: { icon: React.ReactNode; label: string; onClick: () => void; danger?: boolean; testId?: string }) {
   return (
-    <button className="press" onClick={onClick} style={{ width: "100%", height: 52, padding: "0 12px", display: "flex", alignItems: "center", gap: 12, border: 0, borderRadius: 14, background: "transparent", color: danger ? "#FF9C8F" : "var(--text)", fontSize: 15, fontWeight: 500, textAlign: "left" }}>
+    <button className="press" onClick={onClick} data-testid={testId} style={{ width: "100%", height: 52, padding: "0 12px", display: "flex", alignItems: "center", gap: 12, border: 0, borderRadius: 14, background: "transparent", color: danger ? "#FF9C8F" : "var(--text)", fontSize: 15, fontWeight: 500, textAlign: "left" }}>
       <span style={{ color: danger ? "#FF9C8F" : "var(--muted)" }}>{icon}</span>{label}
     </button>
   );

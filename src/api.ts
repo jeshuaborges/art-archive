@@ -1,4 +1,4 @@
-import type { Artwork, Config, FieldDef, ImageDTO, Summary } from "./types";
+import type { ArchivedMode, Artwork, Config, FieldDef, ImageDTO, Summary } from "./types";
 import type { Prepared } from "./imageprep";
 
 export class ApiError extends Error {
@@ -21,20 +21,33 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface SearchResult { id: string; match: number; via: string[] }
 export interface SimilarResult { id: string; match: number }
+export interface BulkResult { changed: string[]; unchanged: string[]; notFound: string[] }
+
+/** "?archived=…" (or "&…"), left off for the default. */
+const archivedQs = (m: ArchivedMode | undefined, sep = "?") => (m && m !== "exclude" ? `${sep}archived=${m}` : "");
+const bulk = (path: string, ids: string[]) => req<BulkResult>(path, { method: "POST", body: JSON.stringify({ ids }) });
 
 export const api = {
   me: () => req<{ email: string }>("/api/me"),
   config: () => req<Config>("/api/config"),
   fields: () => req<FieldDef[]>("/api/fields"),
-  list: () => req<Summary[]>("/api/artworks"),
-  get: (id: string) => req<Artwork>(`/api/artworks/${encodeURIComponent(id)}`),
+  list: (archived?: ArchivedMode) => req<Summary[]>(`/api/artworks${archivedQs(archived)}`),
+  /** `images` chooses which of its images come back (archived ones are left out by default). */
+  get: (id: string, images?: ArchivedMode) => req<Artwork>(`/api/artworks/${encodeURIComponent(id)}${archivedQs(images)}`),
   create: (body: Record<string, unknown>) => req<Artwork>("/api/artworks", { method: "POST", body: JSON.stringify(body) }),
   update: (id: string, body: Record<string, unknown>) => req<Artwork>(`/api/artworks/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
   remove: (id: string) => req<void>(`/api/artworks/${encodeURIComponent(id)}`, { method: "DELETE" }),
-  search: (q: string, signal?: AbortSignal) => req<{ backend: string; results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(q)}`, { signal }),
+  archive: (id: string) => req<Artwork>(`/api/artworks/${encodeURIComponent(id)}/archive`, { method: "POST" }),
+  unarchive: (id: string) => req<Artwork>(`/api/artworks/${encodeURIComponent(id)}/unarchive`, { method: "POST" }),
+  archiveMany: (ids: string[]) => bulk("/api/artworks/archive", ids),
+  unarchiveMany: (ids: string[]) => bulk("/api/artworks/unarchive", ids),
+  search: (q: string, signal?: AbortSignal, archived?: ArchivedMode) =>
+    req<{ backend: string; results: SearchResult[] }>(`/api/search?q=${encodeURIComponent(q)}${archivedQs(archived, "&")}`, { signal }),
   similar: (id: string) => req<SimilarResult[]>(`/api/artworks/${encodeURIComponent(id)}/similar?k=8`),
   updateImage: (id: string, body: Record<string, unknown>) => req<Artwork>(`/api/images/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteImage: (id: string) => req<Artwork>(`/api/images/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  archiveImage: (id: string) => req<Artwork>(`/api/images/${encodeURIComponent(id)}/archive`, { method: "POST" }),
+  unarchiveImage: (id: string) => req<Artwork>(`/api/images/${encodeURIComponent(id)}/unarchive`, { method: "POST" }),
 
   /** Upload with progress. Sends the untouched original plus phone-made display/thumb variants. */
   uploadImage(artworkId: string, p: Prepared, meta: Record<string, unknown>, onProgress: (f: number) => void): Promise<{ image: ImageDTO; duplicate: boolean }> {

@@ -41,7 +41,10 @@ export function ftsRow(a: ArtworkDTO, defs: FieldDef[]) {
 
 export const sidecarKey = (a: Pick<ArtworkDTO, "catalogId">) => `artworks/${a.catalogId}/record.json`;
 
-/** The self-describing record.json kept next to a piece's images in R2. */
+/**
+ * The self-describing record.json kept next to a piece's images in R2. `a` is read
+ * with all of its images: archived ones stay listed, marked with when and by whom.
+ */
 export function sidecarRecord(a: ArtworkDTO, defs: FieldDef[], statusLabels: Record<string, string>) {
   const byKey = new Map(defs.map((d) => [d.key, d]));
   return {
@@ -49,12 +52,16 @@ export function sidecarRecord(a: ArtworkDTO, defs: FieldDef[], statusLabels: Rec
     catalogId: a.catalogId, title: a.title,
     year: { start: a.yearStart, end: a.yearEnd, circa: a.circa },
     status: statusLabels[a.status] || a.status,
+    archived: a.archivedAt ? { at: a.archivedAt, by: a.archivedBy } : null,
     fields: Object.entries(a.attrs).map(([key, value]) => {
       const d = byKey.get(key);
       return { key, label: d?.label ?? key, value, display: d ? formatValue(d, value) : String(value) };
     }),
     description: a.aiDescription, palette: a.palette,
-    images: a.images.map((i) => ({ file: i.original?.split("/").pop(), kind: i.kind, role: i.role, caption: i.caption, sha256: i.sha256, width: i.width, height: i.height })),
+    images: a.images.map((i) => ({
+      file: i.original?.split("/").pop(), kind: i.kind, role: i.role, caption: i.caption, sha256: i.sha256, width: i.width, height: i.height,
+      ...(i.archivedAt ? { archived: { at: i.archivedAt, by: i.archivedBy } } : {}),
+    })),
     version: a.version, updatedAt: a.updatedAt,
   };
 }

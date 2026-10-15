@@ -326,6 +326,143 @@ describe("review fixes", () => {
   });
 });
 
+describe("archive", () => {
+  let one, two, imgs;
+  const ids = (r) => r.body.map((x) => x.id);
+  const searchIds = async (q, archived) => (await j(`/api/search?q=${encodeURIComponent(q)}${archived ? `&archived=${archived}` : ""}`)).body.results.map((r) => r.id);
+  before(async () => {
+    one = (await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Quokka Sample One", yearStart: 2012, attrs: { medium: "Oil", series: "Sample data" } }) })).body;
+    two = (await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Quokka Sample Two", yearStart: 2013, attrs: { medium: "Oil", series: "Sample data" } }) })).body;
+    const front = (await upload(one.id, await jpeg({ r: 10, g: 120, b: 200 }), { kind: "work", role: "Front", palette: ["#0A78C8"] })).body.image;
+    const detail = (await upload(one.id, await jpeg({ r: 220, g: 180, b: 20 }), { kind: "work", role: "Detail", palette: ["#DCB414"] })).body.image;
+    const study = (await upload(one.id, await jpeg({ r: 90, g: 90, b: 90 }), { kind: "study", role: "Sketch" })).body.image;
+    imgs = { front, detail, study };
+  });
+
+  test("archives a piece reversibly: a new version with a revision, and a repeat changes nothing", async () => {
+    const r = await j(`/api/artworks/${one.id}/archive`, { method: "POST" });
+    assert.equal(r.status, 200);
+    assert.ok(r.body.archivedAt);
+    assert.equal(r.body.archivedBy, "dev@localhost");
+    const v = r.body.version;
+    const again = await j(`/api/artworks/${one.id}/archive`, { method: "POST" });
+    assert.equal(again.body.version, v);
+    const rev = await j(`/api/artworks/${one.id}/revisions`);
+    assert.equal(rev.body[0].version, v);
+    assert.equal(rev.body.filter((x) => x.version === v).length, 1);
+    assert.equal((await j("/api/artworks/nope/archive", { method: "POST" })).status, 404);
+  });
+  test("lists leave archived pieces out unless asked: include and only", async () => {
+    assert.ok(!ids(await j("/api/artworks")).includes(one.id));
+    assert.ok(ids(await j("/api/artworks")).includes(two.id));
+    const inc = await j("/api/artworks?archived=include");
+    assert.ok(ids(inc).includes(one.id) && ids(inc).includes(two.id));
+    assert.ok(inc.body.find((x) => x.id === one.id).archivedAt);
+    assert.equal(inc.body.find((x) => x.id === two.id).archivedAt, null);
+    const only = await j("/api/artworks?archived=only");
+    assert.deepEqual(ids(only), [one.id]);
+    assert.equal((await j("/api/artworks?archived=everything")).status, 422);
+  });
+  test("an archived piece still opens by id or catalog number, showing its state", async () => {
+    const r = await j(`/api/artworks/${one.catalogId}`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.id, one.id);
+    assert.ok(r.body.archivedAt);
+  });
+  test("search (meaning, words and titles) and similar leave archived pieces out by default", async () => {
+    const def = await searchIds("quokka sample");
+    assert.ok(def.includes(two.id));
+    assert.ok(!def.includes(one.id));
+    assert.ok((await searchIds("quokka sample", "include")).includes(one.id));
+    assert.deepEqual(await searchIds("quokka sample", "only"), [one.id]);
+    assert.ok(!(await searchIds(one.catalogId)).includes(one.id), "not even by exact catalog number");
+    assert.equal((await j("/api/search?q=quokka&archived=x")).status, 422);
+    const sim = await j(`/api/artworks/${two.id}/similar?k=24`);
+    assert.ok(!sim.body.some((x) => x.id === one.id));
+  });
+  test("record.json keeps the archived state", async () => {
+    const r = await j(`/img/artworks/${one.catalogId}/record.json`);
+    assert.equal(r.body.archived.by, "dev@localhost");
+    assert.ok(r.body.archived.at);
+  });
+  test("unarchiving brings it straight back to lists and search", async () => {
+    const r = await j(`/api/artworks/${one.id}/unarchive`, { method: "POST" });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.archivedAt, null);
+    assert.equal(r.body.archivedBy, null);
+    assert.ok(ids(await j("/api/artworks")).includes(one.id));
+    assert.ok((await searchIds("quokka sample")).includes(one.id));
+    assert.ok((await searchIds(one.catalogId)).includes(one.id));
+    const rev = await j(`/api/artworks/${one.id}/revisions`);
+    assert.equal(rev.body[0].version, r.body.version);
+    assert.equal((await j(`/img/artworks/${one.catalogId}/record.json`)).body.archived, null);
+  });
+
+  test("archiving the cover image hands the cover to the next image; it can't be made the cover while archived", async () => {
+    assert.equal((await j(`/api/artworks/${one.id}`)).body.coverImageId, imgs.front.id);
+    const r = await j(`/api/images/${imgs.front.id}/archive`, { method: "POST" });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.coverImageId, imgs.detail.id);
+    assert.deepEqual(r.body.palette, ["#DCB414"]);
+    assert.ok(!r.body.images.some((i) => i.id === imgs.front.id));
+    assert.equal(r.body.archivedImageCount, 1);
+    const inc = await j(`/api/artworks/${one.id}?archived=include`);
+    assert.ok(inc.body.images.find((i) => i.id === imgs.front.id).archivedAt);
+    assert.deepEqual((await j(`/api/artworks/${one.id}?archived=only`)).body.images.map((i) => i.id), [imgs.front.id]);
+    const s = (await j("/api/artworks")).body.find((x) => x.id === one.id);
+    assert.equal(s.imageCount, 2);
+    assert.match(s.thumb, new RegExp(imgs.detail.thumb.split("/").pop()));
+    assert.equal((await j(`/api/images/${imgs.front.id}`, { method: "PATCH", body: JSON.stringify({ makeCover: true }) })).status, 422);
+    const rec = (await j(`/img/artworks/${one.catalogId}/record.json`)).body;
+    assert.equal(rec.images.length, 3, "record.json still lists the archived image");
+    assert.ok(rec.images.find((i) => i.sha256 === imgs.front.sha256).archived);
+  });
+  test("unarchiving an image doesn't take the cover back", async () => {
+    const r = await j(`/api/images/${imgs.front.id}/unarchive`, { method: "POST" });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.coverImageId, imgs.detail.id);
+    assert.ok(r.body.images.some((i) => i.id === imgs.front.id));
+    assert.equal(r.body.archivedImageCount, 0);
+    assert.equal((await j("/api/images/nope/archive", { method: "POST" })).status, 404);
+  });
+  test("with every image archived there is no cover; the first one back becomes it", async () => {
+    for (const i of Object.values(imgs)) await j(`/api/images/${i.id}/archive`, { method: "POST" });
+    const none = await j(`/api/artworks/${one.id}`);
+    assert.equal(none.body.coverImageId, null);
+    assert.deepEqual(none.body.images, []);
+    assert.equal((await j("/api/artworks")).body.find((x) => x.id === one.id).thumb, null);
+    const back = await j(`/api/images/${imgs.study.id}/unarchive`, { method: "POST" });
+    assert.equal(back.body.coverImageId, imgs.study.id);
+    for (const i of [imgs.front, imgs.detail]) await j(`/api/images/${i.id}/unarchive`, { method: "POST" });
+    assert.equal((await j(`/api/artworks/${one.id}`)).body.coverImageId, imgs.study.id, "still the study: nothing steals it back");
+  });
+
+  test("bulk archive and unarchive by ids, reporting what changed", async () => {
+    const r = await j("/api/artworks/archive", { method: "POST", body: JSON.stringify({ ids: [one.id, two.catalogId, "nope", one.id] }) });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { changed: [one.id, two.catalogId], unchanged: [], notFound: ["nope"] });
+    assert.deepEqual((await j("/api/search?q=quokka")).body.results, []);
+    const again = await j("/api/artworks/archive", { method: "POST", body: JSON.stringify({ ids: [one.id] }) });
+    assert.deepEqual(again.body.unchanged, [one.id]);
+    const backup = await j("/api/admin/backup", { method: "POST" });
+    assert.ok(backup.body.archivedArtworks >= 2, "the export keeps archived records");
+    assert.equal((await j("/api/artworks/archive", { method: "POST", body: JSON.stringify({ ids: [] }) })).status, 422);
+    assert.equal((await j("/api/artworks/archive", { method: "POST", body: "nope" })).status, 422);
+  });
+  test("MCP search leaves archived pieces out unless asked; get_artwork shows the state", async () => {
+    const rpc = (params) => j("/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params }) });
+    const def = JSON.parse((await rpc({ name: "search_artworks", arguments: { query: "quokka sample" } })).body.result.content[0].text);
+    assert.ok(!def.some((x) => x.id === one.id));
+    const inc = JSON.parse((await rpc({ name: "search_artworks", arguments: { query: "quokka sample", includeArchived: true } })).body.result.content[0].text);
+    assert.ok(inc.find((x) => x.id === one.id).archived);
+    const g = JSON.parse((await rpc({ name: "get_artwork", arguments: { id: one.id } })).body.result.content[0].text);
+    assert.ok(g.archivedAt);
+    const r = await j("/api/artworks/unarchive", { method: "POST", body: JSON.stringify({ ids: [one.id, two.id] }) });
+    assert.deepEqual(r.body.changed, [one.id, two.id]);
+    assert.ok((await searchIds("quokka sample")).includes(two.id));
+  });
+});
+
 describe("MCP endpoint", () => {
   const rpc = (method, params, id = 1) => j("/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id, method, params }) });
   test("initialises and lists tools", async () => {

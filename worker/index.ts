@@ -5,14 +5,21 @@ import { fieldDefInputSchema, loadFieldDefs, OPTION_SCHEMAS, type FieldDefRow, t
 import { handleMcp } from "./mcp";
 import {
   HttpError, STATUS_LABELS, IMAGE_KINDS, addImage, createArtwork, deleteArtwork, deleteImage, exportAll, getArtwork,
-  listRevisions, listSummaries, search, similar, updateArtwork, updateImage, type Env,
+  listRevisions, listSummaries, search, setArtworkArchived, setArtworksArchived, setImageArchived, similar, updateArtwork, updateImage, type Env,
 } from "./store";
 import { vectorBackend } from "./embed";
+import { ARCHIVED_MODES, parseArchivedMode } from "./archive";
 
 export { ArtworkIndexer } from "./indexer";
 
 type App = { Bindings: Env; Variables: { user: Identity } };
 const intParam = (v: string | undefined, def: number, max: number) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 1 ? Math.min(max, n) : def; };
+/** ?archived=exclude (default) | include | only */
+const archivedParam = (v: string | undefined) => {
+  const m = parseArchivedMode(v);
+  if (!m) throw new HttpError(422, `archived must be one of ${ARCHIVED_MODES.join(", ")}`, [{ key: "archived", message: "Unknown value" }]);
+  return m;
+};
 const app = new Hono<App>();
 
 app.onError((err, c) => {
@@ -81,9 +88,15 @@ app.patch("/api/fields/:key", async (c) => {
   return c.json((await loadFieldDefs(c.env.DB)).find((d) => d.key === row.key));
 });
 
-app.get("/api/artworks", async (c) => c.json(await listSummaries(c.env)));
+app.get("/api/artworks", async (c) => c.json(await listSummaries(c.env, archivedParam(c.req.query("archived")))));
 app.post("/api/artworks", async (c) => c.json(await createArtwork(c.env, await c.req.json().catch(() => ({})), c.get("user").email), 201));
-app.get("/api/artworks/:id", async (c) => c.json(await getArtwork(c.env, c.req.param("id"))));
+// Archive out of sight (reversible; DELETE is the soft delete). Bulk takes { ids: [...] }.
+app.post("/api/artworks/archive", async (c) => c.json(await setArtworksArchived(c.env, await c.req.json().catch(() => null), true, c.get("user").email)));
+app.post("/api/artworks/unarchive", async (c) => c.json(await setArtworksArchived(c.env, await c.req.json().catch(() => null), false, c.get("user").email)));
+// An archived piece still opens; `archived` here chooses its images.
+app.get("/api/artworks/:id", async (c) => c.json(await getArtwork(c.env, c.req.param("id"), archivedParam(c.req.query("archived")))));
+app.post("/api/artworks/:id/archive", async (c) => c.json(await setArtworkArchived(c.env, c.req.param("id"), true, c.get("user").email)));
+app.post("/api/artworks/:id/unarchive", async (c) => c.json(await setArtworkArchived(c.env, c.req.param("id"), false, c.get("user").email)));
 app.patch("/api/artworks/:id", async (c) => c.json(await updateArtwork(c.env, c.req.param("id"), await c.req.json().catch(() => null), c.get("user").email)));
 app.delete("/api/artworks/:id", async (c) => { await deleteArtwork(c.env, c.req.param("id"), c.get("user").email); return c.body(null, 204); });
 app.get("/api/artworks/:id/revisions", async (c) => c.json(await listRevisions(c.env, c.req.param("id"))));
@@ -96,8 +109,10 @@ app.post("/api/artworks/:id/images", async (c) => {
 });
 app.patch("/api/images/:id", async (c) => c.json(await updateImage(c.env, c.req.param("id"), await c.req.json().catch(() => null))));
 app.delete("/api/images/:id", async (c) => c.json(await deleteImage(c.env, c.req.param("id"))));
+app.post("/api/images/:id/archive", async (c) => c.json(await setImageArchived(c.env, c.req.param("id"), true, c.get("user").email)));
+app.post("/api/images/:id/unarchive", async (c) => c.json(await setImageArchived(c.env, c.req.param("id"), false, c.get("user").email)));
 
-app.get("/api/search", async (c) => c.json(await search(c.env, c.req.query("q") || "", intParam(c.req.query("limit"), 60, 200))));
+app.get("/api/search", async (c) => c.json(await search(c.env, c.req.query("q") || "", intParam(c.req.query("limit"), 60, 200), archivedParam(c.req.query("archived")))));
 
 app.post("/api/admin/backup", async (c) => c.json(await exportAll(c.env)));
 app.get("/api/admin/backups", async (c) => {

@@ -8,6 +8,10 @@ import {
   DEFAULT_VISION_MODEL, describePrompt, embedText, ftsRow, inlineStep, parseVisionOutput, runIndexing, shouldDescribe, sidecarKey, sidecarRecord,
   startIndexing, upsertDecision, type IndexOps, type IndexParams,
 } from "./indexing";
+import {
+  archivedIdFilter, archivedWhere, archivePatch, bulkIdsSchema, countArchived, coverAfterHiding, coverAfterRestoring, isShown, selectImages,
+  shownIds, tallyBulk, uniqueIds, vectorTopK, type ArchivedMode, type BulkOutcome, type CoverDecision,
+} from "./archive";
 
 export interface Env extends EmbedEnv {
   BUCKET: R2Bucket;
@@ -36,11 +40,13 @@ interface ArtworkRow {
   id: string; catalog_id: string; title: string; year_start: number | null; year_end: number | null; circa: number;
   status: string; attrs: string; palette: string; ai_description: string | null; cover_image_id: string | null;
   version: number; created_at: string; updated_at: string; deleted_at: string | null;
+  archived_at: string | null; archived_by: string | null;
 }
 interface ImageRow {
   id: string; artwork_id: string; kind: string; role: string; r2_key: string; display_key: string | null; thumb_key: string | null;
   sha256: string; content_type: string; bytes: number; width: number | null; height: number | null; palette: string;
   caption: string | null; taken_on: string | null; sort_order: number; created_at: string;
+  deleted_at: string | null; archived_at: string | null; archived_by: string | null;
 }
 
 const now = () => new Date().toISOString();
@@ -51,6 +57,7 @@ function imageDTO(r: ImageRow) {
     id: r.id, artworkId: r.artwork_id, kind: r.kind, role: r.role, caption: r.caption, takenOn: r.taken_on,
     width: r.width, height: r.height, bytes: r.bytes, contentType: r.content_type, sha256: r.sha256,
     palette: JSON.parse(r.palette) as string[], sortOrder: r.sort_order, createdAt: r.created_at,
+    archivedAt: r.archived_at, archivedBy: r.archived_by,
     original: imgUrl(r.r2_key), display: imgUrl(r.display_key || r.r2_key), thumb: imgUrl(r.thumb_key || r.display_key || r.r2_key),
   };
 }
@@ -60,42 +67,53 @@ function sortImages(imgs: ImageRow[]) {
   return imgs.sort((a, b) => (KIND_ORDER[a.kind] - KIND_ORDER[b.kind]) || (a.sort_order - b.sort_order) || a.created_at.localeCompare(b.created_at));
 }
 
-function artworkDTO(a: ArtworkRow, images: ImageRow[]) {
-  const imgs = sortImages(images).map(imageDTO);
-  const cover = imgs.find((i) => i.id === a.cover_image_id) || imgs.find((i) => i.kind === "work") || imgs[0] || null;
+/**
+ * An artwork and the images a read asks for (`images`: archived ones left out by
+ * default). The cover is always a visible image, whichever images are shown.
+ */
+export function artworkDTO(a: ArtworkRow, rows: ImageRow[], images: ArchivedMode = "exclude") {
+  const { shown, archivedCount } = selectImages(sortImages([...rows]), images);
+  const imgs = shown.map(imageDTO);
+  const vis = sortImages(rows.filter((r) => !r.archived_at)).map(imageDTO);
+  const cover = vis.find((i) => i.id === a.cover_image_id) || vis.find((i) => i.kind === "work") || vis[0] || null;
   return {
     id: a.id, catalogId: a.catalog_id, title: a.title, yearStart: a.year_start, yearEnd: a.year_end, circa: a.circa === 1,
     status: a.status, attrs: JSON.parse(a.attrs) as Attrs, palette: JSON.parse(a.palette) as string[],
     aiDescription: a.ai_description, coverImageId: cover ? cover.id : null, version: a.version,
-    createdAt: a.created_at, updatedAt: a.updated_at, images: imgs, cover,
+    createdAt: a.created_at, updatedAt: a.updated_at, archivedAt: a.archived_at, archivedBy: a.archived_by,
+    images: imgs, cover, archivedImageCount: archivedCount,
   };
 }
 export type ArtworkDTO = ReturnType<typeof artworkDTO>;
 
-export async function getArtwork(env: Env, idOrCatalog: string): Promise<ArtworkDTO> {
+/** The same artwork with a different choice of images (it must have been read with all of them). */
+export const viewImages = (a: ArtworkDTO, images: ArchivedMode): ArtworkDTO => ({ ...a, images: a.images.filter((i) => isShown(i.archivedAt, images)) });
+
+/** By id or catalog number. Archived pieces are returned too, so they can be opened and brought back. */
+export async function getArtwork(env: Env, idOrCatalog: string, images: ArchivedMode = "exclude"): Promise<ArtworkDTO> {
   const a = await env.DB.prepare("SELECT * FROM artworks WHERE (id = ?1 OR catalog_id = ?1) AND deleted_at IS NULL").bind(idOrCatalog).first<ArtworkRow>();
   if (!a) throw new HttpError(404, "Artwork not found");
   const { results } = await env.DB.prepare("SELECT * FROM images WHERE artwork_id = ? AND deleted_at IS NULL").bind(a.id).all<ImageRow>();
-  return artworkDTO(a, results);
+  return artworkDTO(a, results, images);
 }
 
-/** Lightweight list for browsing: everything the timeline, wall and filters need. */
-export async function listSummaries(env: Env) {
+/** Lightweight list for browsing: everything the timeline, wall and filters need. Archived pieces only when asked. */
+export async function listSummaries(env: Env, archived: ArchivedMode = "exclude") {
   const { results } = await env.DB.prepare(`
-    SELECT a.id, a.catalog_id, a.title, a.year_start, a.year_end, a.circa, a.status, a.attrs, a.palette, a.version, a.updated_at,
+    SELECT a.id, a.catalog_id, a.title, a.year_start, a.year_end, a.circa, a.status, a.attrs, a.palette, a.version, a.updated_at, a.archived_at,
            COALESCE(c.id, f.id) AS cover_id, COALESCE(c.thumb_key, f.thumb_key) AS thumb_key, COALESCE(c.display_key, f.display_key) AS display_key,
            COALESCE(c.width, f.width) AS w, COALESCE(c.height, f.height) AS h,
-           (SELECT COUNT(*) FROM images i WHERE i.artwork_id = a.id AND i.deleted_at IS NULL) AS image_count
+           (SELECT COUNT(*) FROM images i WHERE i.artwork_id = a.id AND i.deleted_at IS NULL AND i.archived_at IS NULL) AS image_count
     FROM artworks a
-    LEFT JOIN images c ON c.id = a.cover_image_id AND c.deleted_at IS NULL
-    LEFT JOIN images f ON f.id = (SELECT id FROM images x WHERE x.artwork_id = a.id AND x.deleted_at IS NULL ORDER BY (x.kind <> 'work'), x.sort_order, x.created_at LIMIT 1)
-    WHERE a.deleted_at IS NULL
+    LEFT JOIN images c ON c.id = a.cover_image_id AND c.deleted_at IS NULL AND c.archived_at IS NULL
+    LEFT JOIN images f ON f.id = (SELECT id FROM images x WHERE x.artwork_id = a.id AND x.deleted_at IS NULL AND x.archived_at IS NULL ORDER BY (x.kind <> 'work'), x.sort_order, x.created_at LIMIT 1)
+    WHERE a.deleted_at IS NULL AND ${archivedWhere(archived, "a.archived_at")}
     ORDER BY a.year_start IS NULL, a.year_start, a.catalog_id`).all<Record<string, unknown>>();
   return results.map((r) => ({
     id: r.id as string, catalogId: r.catalog_id as string, title: r.title as string,
     yearStart: r.year_start as number | null, yearEnd: r.year_end as number | null, circa: r.circa === 1,
     status: r.status as string, attrs: JSON.parse(r.attrs as string) as Attrs, palette: JSON.parse(r.palette as string) as string[],
-    version: r.version as number, updatedAt: r.updated_at as string,
+    version: r.version as number, updatedAt: r.updated_at as string, archivedAt: r.archived_at as string | null,
     thumb: imgUrl(r.thumb_key as string | null), display: imgUrl(r.display_key as string | null),
     aspect: r.w && r.h ? (r.w as number) / (r.h as number) : null, imageCount: r.image_count as number,
   }));
@@ -143,12 +161,13 @@ async function writeRevision(env: Env, a: ArtworkDTO, by: string) {
 // and the sidecar are right immediately). In the background (ArtworkIndexer
 // Workflow, or inline in local dev): vision description, embedding, vector upsert.
 
-/** The artwork, or null once it is removed. */
+/** The artwork with all of its images (archived included), or null once it is removed. */
 async function liveArtwork(env: Env, id: string): Promise<ArtworkDTO | null> {
-  try { return await getArtwork(env, id); }
+  try { return await getArtwork(env, id, "include"); }
   catch (e) { if (e instanceof HttpError && e.status === 404) return null; throw e; }
 }
 
+/** `a` read with all of its images, so record.json keeps archived ones (marked as such). */
 async function writeText(env: Env, a: ArtworkDTO, defs: FieldDef[]) {
   const r = ftsRow(a, defs);
   // Guarded insert in the same transaction as the delete, so a late refresh can't
@@ -162,11 +181,11 @@ async function writeText(env: Env, a: ArtworkDTO, defs: FieldDef[]) {
   await env.BUCKET.put(sidecarKey(a), JSON.stringify(sidecarRecord(a, defs, STATUS_LABELS), null, 2), { httpMetadata: { contentType: "application/json" } });
 }
 
-/** FTS row + record.json for an artwork, now. */
+/** FTS row + record.json for an artwork, now. Returns the usual view (archived images left out). */
 export async function syncText(env: Env, id: string): Promise<ArtworkDTO> {
-  const a = await getArtwork(env, id);
+  const a = await getArtwork(env, id, "include");
   await writeText(env, a, await loadFieldDefs(env.DB));
-  return a;
+  return viewImages(a, "exclude");
 }
 
 export const scheduleIndexing = (env: Env, params: IndexParams) =>
@@ -290,6 +309,39 @@ export async function deleteArtwork(env: Env, id: string, by: string) {
   await writeRevision(env, { ...a, version: a.version + 1 }, by);
 }
 
+// ----------------------------------------------------------- archive
+// Archived pieces stay in FTS and the vector index (search leaves them out at
+// query time), so archiving only changes the record: no re-embedding, and an
+// unarchived piece is searchable again at once.
+
+/** Archive or unarchive one piece. A repeat is a no-op; a change is a new version with a revision. */
+async function changeArchived(env: Env, id: string, archived: boolean, by: string): Promise<{ artwork: ArtworkDTO; changed: boolean }> {
+  const cur = await getArtwork(env, id);
+  const p = archivePatch(archived, now(), by);
+  const r = await env.DB.prepare(`UPDATE artworks SET archived_at = ?, archived_by = ?, version = version + 1, updated_at = ? WHERE id = ? AND ${p.guard}`)
+    .bind(p.archivedAt, p.archivedBy, now(), cur.id).run();
+  if (!r.meta.changes) return { artwork: cur, changed: false };
+  const a = await syncText(env, cur.id); // record.json carries the archived state
+  await writeRevision(env, a, by);
+  return { artwork: a, changed: true };
+}
+
+export async function setArtworkArchived(env: Env, id: string, archived: boolean, by: string): Promise<ArtworkDTO> {
+  return (await changeArchived(env, id, archived, by)).artwork;
+}
+
+/** Archive or unarchive many pieces by id (e.g. a batch of sample data). */
+export async function setArtworksArchived(env: Env, input: unknown, archived: boolean, by: string) {
+  const parsed = bulkIdsSchema.safeParse(input ?? {});
+  if (!parsed.success) throw new HttpError(422, "Invalid list of artworks", zodIssues(parsed.error));
+  const outcomes: [string, BulkOutcome][] = [];
+  for (const id of uniqueIds(parsed.data.ids)) {
+    try { outcomes.push([id, (await changeArchived(env, id, archived, by)).changed ? "changed" : "unchanged"]); }
+    catch (e) { if (e instanceof HttpError && e.status === 404) outcomes.push([id, "notFound"]); else throw e; }
+  }
+  return tallyBulk(outcomes);
+}
+
 export async function listRevisions(env: Env, id: string) {
   const a = await getArtwork(env, id);
   const { results } = await env.DB.prepare("SELECT version, changed_by, changed_at FROM artwork_revisions WHERE artwork_id = ? ORDER BY version DESC").bind(a.id).all();
@@ -386,6 +438,22 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   return { image: imageDTO(row!), duplicate: false };
 }
 
+/** Carry out a cover decision; the piece's palette follows its cover. */
+async function applyCover(env: Env, artworkId: string, d: CoverDecision) {
+  if (d.kind === "set") await setCover(env, artworkId, d.imageId);
+  else if (d.kind === "clear") await env.DB.prepare("UPDATE artworks SET cover_image_id = NULL, palette = '[]', updated_at = ? WHERE id = ?").bind(now(), artworkId).run();
+  else await env.DB.prepare("UPDATE artworks SET updated_at = ? WHERE id = ?").bind(now(), artworkId).run();
+}
+
+/** The cover and the (not removed) images a cover decision looks at. */
+async function coverState(env: Env, artworkId: string) {
+  const [a, imgs] = await Promise.all([
+    env.DB.prepare("SELECT cover_image_id FROM artworks WHERE id = ?").bind(artworkId).first<{ cover_image_id: string | null }>(),
+    env.DB.prepare("SELECT * FROM images WHERE artwork_id = ? AND deleted_at IS NULL").bind(artworkId).all<ImageRow>(),
+  ]);
+  return { coverId: a?.cover_image_id ?? null, rows: imgs.results };
+}
+
 async function setCover(env: Env, artworkId: string, imageId: string, palette?: string[]) {
   let pal = palette;
   if (!pal) {
@@ -409,6 +477,7 @@ export async function updateImage(env: Env, imageId: string, input: unknown) {
   const img = await env.DB.prepare("SELECT * FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<ImageRow>();
   if (!img) throw new HttpError(404, "Image not found");
   const v = p.data;
+  if (v.makeCover && img.archived_at) throw new HttpError(422, "Unarchive this image before making it the main image", [{ key: "makeCover", message: "This image is archived" }]);
   await env.DB.prepare("UPDATE images SET kind = ?, role = ?, caption = ?, taken_on = ? WHERE id = ?")
     .bind(v.kind ?? img.kind, v.role ?? img.role, v.caption !== undefined ? v.caption : img.caption, v.takenOn !== undefined ? v.takenOn : img.taken_on, img.id).run();
   if (v.makeCover) await setCover(env, img.artwork_id, img.id);
@@ -420,14 +489,26 @@ export async function deleteImage(env: Env, imageId: string) {
   const img = await env.DB.prepare("SELECT * FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<ImageRow>();
   if (!img) throw new HttpError(404, "Image not found");
   await env.DB.prepare("UPDATE images SET deleted_at = ? WHERE id = ?").bind(now(), img.id).run();
-  const a = await env.DB.prepare("SELECT cover_image_id FROM artworks WHERE id = ?").bind(img.artwork_id).first<{ cover_image_id: string | null }>();
-  if (a?.cover_image_id === img.id) {
-    const next = await env.DB.prepare("SELECT id FROM images WHERE artwork_id = ? AND deleted_at IS NULL ORDER BY (kind <> 'work'), sort_order LIMIT 1").bind(img.artwork_id).first<{ id: string }>();
-    if (next) await setCover(env, img.artwork_id, next.id);
-    else await env.DB.prepare("UPDATE artworks SET cover_image_id = NULL, palette = '[]' WHERE id = ?").bind(img.artwork_id).run();
-  }
-  await reindex(env, img.artwork_id);
-  return getArtwork(env, img.artwork_id);
+  const { coverId, rows } = await coverState(env, img.artwork_id);
+  const d = coverAfterHiding(coverId, img.id, rows);
+  if (d.kind !== "keep") await applyCover(env, img.artwork_id, d);
+  return reindex(env, img.artwork_id);
+}
+
+/**
+ * Archive or unarchive one image. An archived image leaves the carousel and
+ * can't stay the cover (the next one takes over, as when removing); bringing it
+ * back never takes the cover from another image.
+ */
+export async function setImageArchived(env: Env, imageId: string, archived: boolean, by: string) {
+  const img = await env.DB.prepare("SELECT * FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<ImageRow>();
+  if (!img) throw new HttpError(404, "Image not found");
+  const p = archivePatch(archived, now(), by);
+  const r = await env.DB.prepare(`UPDATE images SET archived_at = ?, archived_by = ? WHERE id = ? AND ${p.guard}`).bind(p.archivedAt, p.archivedBy, img.id).run();
+  if (!r.meta.changes) return getArtwork(env, img.artwork_id);
+  const { coverId, rows } = await coverState(env, img.artwork_id);
+  await applyCover(env, img.artwork_id, archived ? coverAfterHiding(coverId, img.id, rows) : coverAfterRestoring(coverId, rows));
+  return reindex(env, img.artwork_id);
 }
 
 // ----------------------------------------------------------- search
@@ -437,13 +518,22 @@ function ftsQuery(q: string): string | null {
   return toks.map((t) => `"${t}"*`).join(" OR ");
 }
 
-export async function search(env: Env, q: string, limit = 60) {
+/** Ids of archived pieces (few; read from a partial index). */
+async function archivedArtworkIds(env: Env): Promise<Set<string>> {
+  const { results } = await env.DB.prepare("SELECT id FROM artworks WHERE archived_at IS NOT NULL AND deleted_at IS NULL").all<{ id: string }>();
+  return new Set(results.map((r) => r.id));
+}
+
+/** Hybrid search. Archived pieces are left out unless asked for (`archived`): filtered at query time in every source. */
+export async function search(env: Env, q: string, limit = 60, archived: ArchivedMode = "exclude") {
   const query = q.trim().slice(0, 300);
   if (!query) return { backend: vectorBackend(env).name, results: [] as { id: string; score: number; match: number; via: string[] }[] };
   const vb = vectorBackend(env);
   const scores = new Map<string, { score: number; match: number; via: string[] }>();
+  const hidden = archived === "include" ? new Set<string>() : await archivedArtworkIds(env);
   const [vec] = await vb.embed([query]);
-  const vhits = await vb.query(vec, Math.min(100, limit * 2));
+  const shown = shownIds(archived, hidden);
+  const vhits = (await vb.query(vec, vectorTopK(Math.min(100, limit * 2), archived, hidden.size))).filter((h) => shown(h.id));
   const top = vhits[0]?.score ?? 0;
   for (const h of vhits) {
     const match = vb.calibrate(h.score);
@@ -454,7 +544,7 @@ export async function search(env: Env, q: string, limit = 60) {
   // below a good semantic hit; a title/catalog match goes straight to the top.
   const fq = ftsQuery(query);
   if (fq) {
-    const { results } = await env.DB.prepare("SELECT artwork_id AS id, bm25(artworks_fts, 0, 2.0, 4.0, 1.0, 1.0) AS rank FROM artworks_fts WHERE artworks_fts MATCH ? ORDER BY rank LIMIT ?")
+    const { results } = await env.DB.prepare(`SELECT artwork_id AS id, bm25(artworks_fts, 0, 2.0, 4.0, 1.0, 1.0) AS rank FROM artworks_fts WHERE artworks_fts MATCH ? AND ${archivedIdFilter(archived, "artwork_id")} ORDER BY rank LIMIT ?`)
       .bind(fq, limit).all<{ id: string; rank: number }>();
     const best = results.length ? results[0].rank : 0;
     for (const r of results) {
@@ -466,7 +556,7 @@ export async function search(env: Env, q: string, limit = 60) {
     }
   }
   const ql = query.toLowerCase();
-  const { results: titleRows } = await env.DB.prepare("SELECT id, title, catalog_id FROM artworks WHERE deleted_at IS NULL AND (instr(lower(title), ?1) > 0 OR lower(catalog_id) = ?1) LIMIT 50")
+  const { results: titleRows } = await env.DB.prepare(`SELECT id, title, catalog_id FROM artworks WHERE deleted_at IS NULL AND ${archivedWhere(archived)} AND (instr(lower(title), ?1) > 0 OR lower(catalog_id) = ?1) LIMIT 50`)
     .bind(ql).all<{ id: string; title: string; catalog_id: string }>();
   const esc = ql.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const wordStart = new RegExp(`(^|[^a-z0-9])${esc}`);
@@ -488,11 +578,15 @@ export async function similar(env: Env, id: string, k = 8) {
   const defs = await loadFieldDefs(env.DB);
   const vb = vectorBackend(env);
   const [vec] = await vb.embed([embedText(a, defs)]);
-  const hits = await vb.query(vec, k + 1);
+  // archived pieces never show up as "more like this"
+  const hidden = await archivedArtworkIds(env);
+  const shown = shownIds("exclude", hidden);
+  const hits = (await vb.query(vec, vectorTopK(k + 1, "exclude", hidden.size))).filter((h) => shown(h.id));
   return hits.filter((h) => h.id !== a.id).slice(0, k).map((h) => ({ id: h.id, score: h.score, match: Math.round(vb.calibrateSimilar(h.score) * 100) / 100 }));
 }
 
 // ----------------------------------------------------------- backup
+/** Everything, archived records included (their archived_at/archived_by are columns like any other). */
 export async function exportAll(env: Env, date = new Date()) {
   const [fields, artworks, images, revisions] = await Promise.all([
     env.DB.prepare("SELECT * FROM field_defs").all(),
@@ -503,5 +597,8 @@ export async function exportAll(env: Env, date = new Date()) {
   const key = `backups/${date.toISOString().slice(0, 10)}.json`;
   const body = JSON.stringify({ format: "anne-laddon-archive-export/v1", exportedAt: date.toISOString(), field_defs: fields.results, artworks: artworks.results, images: images.results, artwork_revisions: revisions.results });
   await env.BUCKET.put(key, body, { httpMetadata: { contentType: "application/json" } });
-  return { key, bytes: body.length, artworks: artworks.results.length, images: images.results.length };
+  return {
+    key, bytes: body.length, artworks: artworks.results.length, images: images.results.length,
+    archivedArtworks: countArchived(artworks.results), archivedImages: countArchived(images.results),
+  };
 }

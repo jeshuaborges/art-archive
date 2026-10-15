@@ -1,5 +1,6 @@
 import { useRef } from "react";
-import type { FieldDef, Filters, Summary } from "../types";
+import type { ArchivedMode, FieldDef, Filters, Summary } from "../types";
+import { emptyFilters } from "../types";
 import { clamp, STATUS_COLOR, SWATCHES, vibrate } from "../util";
 import { Sheet } from "./Sheet";
 
@@ -37,7 +38,7 @@ export function FilterSheet({ open, onClose, fields, items, statuses, filters, o
       header={
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h2 className="display" style={{ margin: 0, fontSize: 26, fontWeight: 700 }}>Filters</h2>
-          <button className="press" onClick={() => { onChange({ values: {}, status: [], color: null, years: null }); vibrate(6); }}
+          <button className="press" onClick={() => { onChange(emptyFilters()); vibrate(6); }}
             style={{ height: 40, padding: "0 14px", borderRadius: 999, border: 0, background: "transparent", color: "#FF9A5C", fontSize: 14, fontWeight: 600 }}>Reset</button>
         </div>
       }
@@ -91,10 +92,22 @@ export function FilterSheet({ open, onClose, fields, items, statuses, filters, o
           </div>
         </div>
         <YearRange bounds={bounds} value={[y0, y1]} onChange={(v) => onChange({ ...filters, years: v[0] === bounds[0] && v[1] === bounds[1] ? null : v })} />
+        <div>
+          <div className="lbl">Archived pieces</div>
+          <div role="radiogroup" aria-label="Archived pieces" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+            {ARCHIVED_CHOICES.map(([m, label]) => (
+              <button key={m} role="radio" className="chip press" aria-checked={filters.archived === m} data-testid={`archived-${m}`}
+                onClick={() => onChange({ ...filters, archived: m })}>{label}</button>
+            ))}
+          </div>
+          <p style={{ margin: "8px 0 0", fontSize: 12.5, lineHeight: 1.45, color: "var(--muted)" }}>Archived pieces are kept, just out of sight. Show them to bring one back.</p>
+        </div>
       </div>
     </Sheet>
   );
 }
+
+const ARCHIVED_CHOICES: [ArchivedMode, string][] = [["exclude", "Hide"], ["include", "Show too"], ["only", "Only archived"]];
 
 function YearRange({ bounds, value, onChange }: { bounds: [number, number]; value: [number, number]; onChange: (v: [number, number]) => void }) {
   const track = useRef<HTMLDivElement>(null);

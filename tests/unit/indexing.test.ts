@@ -13,7 +13,7 @@ const defs = [
 const art = (o: Partial<ArtworkDTO> = {}): ArtworkDTO => ({
   id: "a1", catalogId: "2020-001", title: "Soda Lake", yearStart: 2021, yearEnd: null, circa: false, status: "sold",
   attrs: { medium: "Oil", location: "Hallway" }, palette: ["#7B3A8E", "#E0A030"], aiDescription: null, coverImageId: null, version: 3,
-  createdAt: "2026-01-01", updatedAt: "2026-01-02", images: [], cover: null, ...o,
+  createdAt: "2026-01-01", updatedAt: "2026-01-02", archivedAt: null, archivedBy: null, images: [], cover: null, archivedImageCount: 0, ...o,
 });
 
 describe("indexing text builders", () => {
@@ -39,6 +39,19 @@ describe("indexing text builders", () => {
     expect(rec).toMatchObject({ format: "anne-laddon-archive-record/v1", catalogId: "2020-001", status: "Sold", description: "A lake.", version: 3 });
     expect(rec.fields).toContainEqual({ key: "location", label: "Where it is", value: "Hallway", display: "Hallway" });
     expect(sidecarRecord(art({ status: "odd" }), defs, {}).status).toBe("odd");
+  });
+  it("keeps archived state in record.json rather than dropping archived records", () => {
+    expect(sidecarRecord(art(), defs, {}).archived).toBeNull();
+    const image = (id: string, archivedAt: string | null) => ({
+      id, artworkId: "a1", kind: "work", role: "", caption: null, takenOn: null, width: 1, height: 1, bytes: 1, contentType: "image/jpeg", sha256: id,
+      palette: [], sortOrder: 0, createdAt: "2026-01-01", archivedAt, archivedBy: archivedAt ? "anne@x" : null,
+      original: `/img/artworks/2020-001/${id}.jpg`, display: null, thumb: null,
+    });
+    const rec = sidecarRecord(art({ archivedAt: "2026-10-01", archivedBy: "anne@x", images: [image("k1", null), image("k2", "2026-10-02")] as ArtworkDTO["images"] }), defs, {});
+    expect(rec.archived).toEqual({ at: "2026-10-01", by: "anne@x" });
+    expect(rec.images).toHaveLength(2);
+    expect(rec.images[0]).not.toHaveProperty("archived");
+    expect(rec.images[1]).toMatchObject({ file: "k2.jpg", archived: { at: "2026-10-02", by: "anne@x" } });
   });
 });
 
