@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authenticate, verifyAccessJwt } from "../../worker/auth";
+import { authenticate, identityFromClaims, parseServiceTokenNames, verifyAccessJwt } from "../../worker/auth";
 
 const enc = (o: unknown) => Buffer.from(JSON.stringify(o)).toString("base64url");
 
@@ -26,7 +26,29 @@ describe("Cloudflare Access JWT", async () => {
   it("accepts a valid token and returns the email", async () => {
     expect(await verifyAccessJwt(await sign(kp, good), TEAM, AUD, keys)).toEqual({ email: "anne@example.com" });
     const req = new Request("https://x/api/me", { headers: { "Cf-Access-Jwt-Assertion": await sign(kp, good) } });
-    expect(await authenticate(req, env, keys)).toEqual({ email: "anne@example.com", via: "access" });
+    expect(await authenticate(req, env, keys)).toEqual({ actor: "anne@example.com", email: "anne@example.com", via: "access" });
+  });
+  // Service token JWT (Access docs, "Application token" → Service token authentication):
+  // no email, `common_name` = the token's Client ID, `sub` = "".
+  const service = { type: "app", aud: [AUD], exp: now + 3600, iss: `https://${TEAM}`, common_name: "abc123.access", sub: "" };
+  it("accepts a service token and attributes it to service:<client id>", async () => {
+    expect(await verifyAccessJwt(await sign(kp, service), TEAM, AUD, keys)).toEqual({ commonName: "abc123.access" });
+    const req = new Request("https://x/api/artworks", { headers: { "Cf-Access-Jwt-Assertion": await sign(kp, service) } });
+    expect(await authenticate(req, env, keys)).toEqual({ actor: "service:abc123.access", email: null, via: "service" });
+  });
+  it("uses a friendly service token name from SERVICE_TOKEN_NAMES", async () => {
+    const req = new Request("https://x/api/artworks", { headers: { "Cf-Access-Jwt-Assertion": await sign(kp, service) } });
+    expect((await authenticate(req, { ...env, SERVICE_TOKEN_NAMES: '{"abc123.access":"importer"}' }, keys))?.actor).toBe("service:importer");
+    expect((await authenticate(req, { ...env, SERVICE_TOKEN_NAMES: "not json" }, keys))?.actor).toBe("service:abc123.access");
+  });
+  it("refuses a token with neither email nor common_name, and a service token for another audience", async () => {
+    const { common_name: _, ...anonymous } = service;
+    expect(await verifyAccessJwt(await sign(kp, anonymous), TEAM, AUD, keys)).toBeNull();
+    expect(await verifyAccessJwt(await sign(kp, { ...service, common_name: "" }), TEAM, AUD, keys)).toBeNull();
+    expect(await verifyAccessJwt(await sign(kp, { ...service, common_name: 42 }), TEAM, AUD, keys)).toBeNull();
+    expect(await authenticate(new Request("https://x/", { headers: { "Cf-Access-Jwt-Assertion": await sign(kp, anonymous) } }), env, keys)).toBeNull();
+    expect(await verifyAccessJwt(await sign(kp, { ...service, aud: ["other"] }), TEAM, AUD, keys)).toBeNull();
+    expect(await verifyAccessJwt(await sign(kp, { ...service, exp: now - 10 }), TEAM, AUD, keys)).toBeNull();
   });
   it("accepts the CF_Authorization cookie", async () => {
     const req = new Request("https://x/", { headers: { Cookie: `a=b; CF_Authorization=${await sign(kp, good)}` } });
@@ -50,7 +72,25 @@ describe("Cloudflare Access JWT", async () => {
   });
   it("only allows the dev identity when explicitly enabled and Access isn't configured", async () => {
     expect(await authenticate(new Request("https://x/"), {})).toBeNull();
-    expect(await authenticate(new Request("https://x/"), { ALLOW_DEV_AUTH: "true" })).toEqual({ email: "dev@localhost", via: "dev" });
+    expect(await authenticate(new Request("https://x/"), { ALLOW_DEV_AUTH: "true" })).toEqual({ actor: "dev@localhost", email: "dev@localhost", via: "dev" });
     expect(await authenticate(new Request("https://x/"), { ...env, ALLOW_DEV_AUTH: "true" }, keys)).toBeNull();
+  });
+});
+
+describe("identity from Access claims (pure)", () => {
+  it("prefers the email, then the service token, else refuses", () => {
+    expect(identityFromClaims({ email: "anne@example.com" })).toEqual({ actor: "anne@example.com", email: "anne@example.com", via: "access" });
+    expect(identityFromClaims({ email: "anne@example.com", commonName: "abc.access" })?.via).toBe("access");
+    expect(identityFromClaims({ commonName: "abc.access" })).toEqual({ actor: "service:abc.access", email: null, via: "service" });
+    expect(identityFromClaims({ commonName: "abc.access" }, { "abc.access": "importer" })?.actor).toBe("service:importer");
+    expect(identityFromClaims({})).toBeNull();
+    expect(identityFromClaims(null)).toBeNull();
+  });
+  it("parses SERVICE_TOKEN_NAMES, dropping anything malformed", () => {
+    expect(parseServiceTokenNames(undefined)).toEqual({});
+    expect(parseServiceTokenNames("")).toEqual({});
+    expect(parseServiceTokenNames("[1]")).toEqual({});
+    expect(parseServiceTokenNames("{oops")).toEqual({});
+    expect(parseServiceTokenNames('{"a.access":"importer","b.access":42,"c.access":"has space","d.access":""}')).toEqual({ "a.access": "importer" });
   });
 });

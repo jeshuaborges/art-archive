@@ -1,7 +1,10 @@
 /**
  * Identity comes from Cloudflare Access, which sits in front of the Worker and
  * handles login. The app builds no auth of its own: it only verifies the Access
- * JWT (so the Worker can't be reached around Access) and reads the email.
+ * JWT (so the Worker can't be reached around Access) and reads who it is for:
+ * a person (the `email` claim) or an Access service token used by a script such
+ * as the importer (no email; `common_name` is the token's Client ID). Both kinds
+ * of JWT are verified the same way; `identityFromClaims` decides who that is.
  *
  * Local dev (ALLOW_DEV_AUTH="true", set only in the `dev` environment) uses a
  * dev identity instead.
@@ -10,8 +13,16 @@ export interface AuthEnv {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
   ALLOW_DEV_AUTH?: string;
+  /** Optional friendly names for service tokens, by Client ID: '{"abc123.access":"importer"}'. */
+  SERVICE_TOKEN_NAMES?: string;
 }
-export interface Identity { email: string; via: "access" | "dev" }
+/**
+ * `actor` is what changes are attributed to: the email for a person,
+ * `service:<name>` for a service token (`name` from SERVICE_TOKEN_NAMES, else its Client ID).
+ */
+export interface Identity { actor: string; email: string | null; via: "access" | "service" | "dev" }
+/** The identifying claims of a verified Access JWT. */
+export interface AccessClaims { email?: string; commonName?: string }
 
 type Jwk = JsonWebKey & { kid?: string };
 export type KeyFetcher = (teamDomain: string) => Promise<Jwk[]>;
@@ -44,10 +55,10 @@ function readCookie(header: string | null, name: string): string | null {
   return null;
 }
 
-export async function verifyAccessJwt(token: string, teamDomain: string, aud: string, fetchKeys: KeyFetcher = fetchAccessKeys, now = Date.now()): Promise<{ email: string } | null> {
+export async function verifyAccessJwt(token: string, teamDomain: string, aud: string, fetchKeys: KeyFetcher = fetchAccessKeys, now = Date.now()): Promise<AccessClaims | null> {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
-  let header: { alg?: string; kid?: string }, payload: { aud?: string | string[]; exp?: number; nbf?: number; iss?: string; email?: string };
+  let header: { alg?: string; kid?: string }, payload: { aud?: string | string[]; exp?: number; nbf?: number; iss?: string; email?: unknown; common_name?: unknown };
   try {
     header = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[0])));
     payload = JSON.parse(new TextDecoder().decode(b64urlToBytes(parts[1])));
@@ -65,8 +76,34 @@ export async function verifyAccessJwt(token: string, teamDomain: string, aud: st
   const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   if (!auds.includes(aud)) return null;
   if (payload.iss && payload.iss !== `https://${teamDomain}`) return null;
-  if (!payload.email) return null;
-  return { email: payload.email };
+  const email = typeof payload.email === "string" && payload.email ? payload.email : undefined;
+  const commonName = typeof payload.common_name === "string" && payload.common_name ? payload.common_name : undefined;
+  if (!email && !commonName) return null;
+  return { ...(email ? { email } : {}), ...(commonName ? { commonName } : {}) };
+}
+
+// ----------------------------------------------------------- functional core
+const SERVICE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/** SERVICE_TOKEN_NAMES as a map; anything malformed is left out (names fall back to the Client ID). */
+export function parseServiceTokenNames(raw: string | undefined): Record<string, string> {
+  if (!raw?.trim()) return {};
+  let v: unknown;
+  try { v = JSON.parse(raw); } catch { return {}; }
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>)
+    .filter((e): e is [string, string] => typeof e[1] === "string" && SERVICE_NAME_RE.test(e[1])));
+}
+
+/**
+ * Who a verified Access JWT is for. A person's token carries `email`; a service
+ * token's carries no email but `common_name` (its Client ID). Neither: refused.
+ */
+export function identityFromClaims(claims: AccessClaims | null, names: Record<string, string> = {}): Identity | null {
+  if (!claims) return null;
+  if (claims.email) return { actor: claims.email, email: claims.email, via: "access" };
+  if (claims.commonName) return { actor: `service:${names[claims.commonName] ?? claims.commonName}`, email: null, via: "service" };
+  return null;
 }
 
 export async function authenticate(req: Request, env: AuthEnv, fetchKeys: KeyFetcher = fetchAccessKeys): Promise<Identity | null> {
@@ -74,8 +111,8 @@ export async function authenticate(req: Request, env: AuthEnv, fetchKeys: KeyFet
     const token = req.headers.get("Cf-Access-Jwt-Assertion") || readCookie(req.headers.get("Cookie"), "CF_Authorization");
     if (!token) return null;
     try {
-      const r = await verifyAccessJwt(token, env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD, fetchKeys);
-      return r ? { email: r.email, via: "access" } : null;
+      const claims = await verifyAccessJwt(token, env.ACCESS_TEAM_DOMAIN, env.ACCESS_AUD, fetchKeys);
+      return identityFromClaims(claims, parseServiceTokenNames(env.SERVICE_TOKEN_NAMES));
     } catch (e) {
       console.warn("Access JWT verification failed", e);
       return null; // fail closed
@@ -83,7 +120,8 @@ export async function authenticate(req: Request, env: AuthEnv, fetchKeys: KeyFet
   }
   if (env.ALLOW_DEV_AUTH === "true") {
     const who = req.headers.get("X-Dev-User");
-    return { email: who && /^[^@\s]+@[^@\s]+$/.test(who) ? who : "dev@localhost", via: "dev" };
+    const email = who && /^[^@\s]+@[^@\s]+$/.test(who) ? who : "dev@localhost";
+    return { actor: email, email, via: "dev" };
   }
   return null;
 }

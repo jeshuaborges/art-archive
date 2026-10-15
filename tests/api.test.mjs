@@ -38,7 +38,7 @@ describe("auth (Cloudflare Access only)", () => {
   test("dev identity works only in the dev environment", async () => {
     const r = await j("/api/me");
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body, { email: "dev@localhost", via: "dev" });
+    assert.deepEqual(r.body, { actor: "dev@localhost", email: "dev@localhost", via: "dev" });
   });
   test("without Access or dev auth every route is refused", async () => {
     for (const p of ["/api/me", "/api/artworks", "/img/artworks/x/y.jpg", "/mcp"]) {
@@ -66,6 +66,9 @@ describe("fields", () => {
     for (const k of ["medium", "subjects", "style", "dimensions", "location", "series", "notes"]) assert.ok(keys.includes(k), k);
     assert.equal(r.body.find((f) => f.key === "medium").filterable, true);
     assert.equal(r.body.find((f) => f.key === "location").filterable, true, "location is filterable (migration 0002)");
+    const inv = r.body.find((f) => f.key === "inventory");
+    assert.deepEqual([inv.label, inv.type, inv.options.maxLength, inv.sortOrder, inv.filterable], ["Inventory no.", "text", 40, 5, false], "inventory field (migration 0005)");
+    assert.equal(r.body[0].key, "inventory", "inventory comes first");
   });
   test("adds a new flexible field, rejects duplicates and bad definitions", async () => {
     const ok = await j("/api/fields", { method: "POST", body: JSON.stringify({ key: "frame", label: "Frame", type: "select", options: { choices: ["Gold", "Black"], allowNew: false }, filterable: true }) });
@@ -292,6 +295,18 @@ describe("artworks", () => {
       assert.equal((await j(`/api/artworks/${t.body.id}`)).status, 404);
       assert.ok(!(await j("/api/artworks")).body.some((x) => x.id === t.body.id));
       assert.deepEqual((await j("/api/search?q=zanzibar")).body.results, []);
+    });
+    test("finds a piece by its exact inventory number, however it is typed", async () => {
+      const t = await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Inventory Test Piece", attrs: { inventory: "OP 1154" } }) });
+      assert.equal(t.status, 201);
+      for (const q of ["OP 1154", "op1154", "op-1154"]) {
+        const r = (await j("/api/search?q=" + encodeURIComponent(q))).body.results;
+        assert.equal(r[0]?.id, t.body.id, q);
+        assert.ok(r[0].via.includes("inventory") && r[0].match >= 0.98, q);
+      }
+      assert.ok(!(await j("/api/search?q=" + encodeURIComponent("OP 115"))).body.results.some((r) => r.via.includes("inventory")), "only exact numbers");
+      assert.equal((await j("/api/artworks", { method: "POST", body: JSON.stringify({ attrs: { inventory: "x".repeat(41) } }) })).status, 422);
+      assert.equal((await j(`/api/artworks/${t.body.id}`, { method: "DELETE" })).status, 204);
     });
     test("exports the whole archive to R2 on demand and on the nightly cron", async () => {
       const r = await j("/api/admin/backup", { method: "POST" });

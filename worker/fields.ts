@@ -186,3 +186,13 @@ export function searchText(defs: FieldDef[], attrs: Attrs): string {
     .map((d) => `${d.label}: ${formatValue(d, attrs[d.key])}`)
     .join("\n");
 }
+
+/**
+ * Anne's inventory number ("OP 1154") compared loosely: case, spaces, dots,
+ * hyphens and slashes don't matter, so "op1154" and "OP-1154" find it too.
+ * `INVENTORY_KEY_SQL` is the same normalisation in SQLite, for exact lookups.
+ */
+export const inventoryKey = (s: string) => s.toLowerCase().replace(/[ .\-/]/g, "");
+export const INVENTORY_KEY_SQL = "lower(replace(replace(replace(replace(json_extract(attrs, '$.inventory'), ' ', ''), '.', ''), '-', ''), '/', ''))";
+/** Worth an exact inventory lookup: at least two characters, one of them a digit. */
+export const looksLikeInventory = (key: string) => key.length >= 2 && /[0-9]/.test(key);

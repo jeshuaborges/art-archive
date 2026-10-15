@@ -2,7 +2,7 @@
  * Data access and mutations, shared by the HTTP API and the MCP endpoint.
  */
 import { z } from "zod";
-import { applyAttrsPatch, loadFieldDefs, type Attrs, type FieldDef, type FieldIssue } from "./fields";
+import { applyAttrsPatch, INVENTORY_KEY_SQL, inventoryKey, loadFieldDefs, looksLikeInventory, type Attrs, type FieldDef, type FieldIssue } from "./fields";
 import { vectorBackend, type EmbedEnv } from "./embed";
 import {
   coverDescribeParams, DEFAULT_VISION_MODEL, descriptionImageIdAfterEdit, describePrompt, describeWrite, embedText, ftsRow, inlineStep, parseVisionOutput,
@@ -29,6 +29,7 @@ export interface Env extends EmbedEnv {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
   ALLOW_DEV_AUTH?: string;
+  SERVICE_TOKEN_NAMES?: string;
 }
 
 export const STATUSES = ["in_studio", "on_show", "sold", "gifted", "consigned", "on_loan", "lost", "unknown"] as const;
@@ -712,6 +713,18 @@ export async function search(env: Env, q: string, limit = 60, archived: Archived
     const cur = scores.get(t.id);
     if (cur) { cur.match = Math.max(cur.match, 0.97); if (!cur.via.includes("title")) cur.via.push("title"); }
     else scores.set(t.id, { score: 0, match: 0.97, via: ["title"] });
+  }
+  // An exact inventory number ("OP 1154") goes to the top too: FTS alone ranks it
+  // as a couple of loose words, below good semantic hits.
+  const inv = inventoryKey(query);
+  if (looksLikeInventory(inv)) {
+    const { results: invRows } = await env.DB.prepare(`SELECT id FROM artworks WHERE deleted_at IS NULL AND ${archivedWhere(archived)} AND ${INVENTORY_KEY_SQL} = ? LIMIT 20`)
+      .bind(inv).all<{ id: string }>();
+    for (const r of invRows) {
+      const cur = scores.get(r.id);
+      if (cur) { cur.match = Math.max(cur.match, 0.98); if (!cur.via.includes("inventory")) cur.via.push("inventory"); }
+      else scores.set(r.id, { score: 0, match: 0.98, via: ["inventory"] });
+    }
   }
   const results = [...scores.entries()].map(([id, s]) => ({ id, ...s, match: Math.round(s.match * 100) / 100 }))
     .filter((r) => r.match >= 0.3)

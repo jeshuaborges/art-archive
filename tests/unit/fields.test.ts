@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAttrsPatch, fieldDefInputSchema, parseFieldDef, searchText, formatFuzzyDate, type FieldDefRow } from "../../worker/fields";
+import { applyAttrsPatch, fieldDefInputSchema, inventoryKey, looksLikeInventory, parseFieldDef, searchText, formatFuzzyDate, type FieldDefRow } from "../../worker/fields";
 
 const row = (r: Partial<FieldDefRow> & { key: string; type: string }): FieldDefRow => ({
   label: r.key, options: "{}", required: 0, sort_order: 0, help_text: null, archived_at: null, filterable: 0, ...r,
@@ -47,6 +47,18 @@ describe("applyAttrsPatch", () => {
   it("builds search text and formats fuzzy dates", () => {
     expect(searchText(defs, { medium: "Oil", subjects: ["Landscape", "Water"], price: 10 })).toContain("Subjects: Landscape, Water");
     expect(formatFuzzyDate({ year: 1985, yearEnd: 1989, circa: true })).toBe("c. 1985–1989");
+  });
+});
+
+describe("inventory numbers", () => {
+  it("normalise case, spaces, dots, hyphens and slashes", () => {
+    for (const s of ["OP 1154", "op1154", "OP-1154", "O.P. 1154", "op/1154"]) expect(inventoryKey(s)).toBe("op1154");
+    expect(inventoryKey("PA 12")).not.toBe(inventoryKey("PA 120"));
+  });
+  it("only look up keys with a digit", () => {
+    expect(looksLikeInventory(inventoryKey("OP 1154"))).toBe(true);
+    expect(looksLikeInventory(inventoryKey("sunset"))).toBe(false);
+    expect(looksLikeInventory("7")).toBe(false);
   });
 });
 

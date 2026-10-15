@@ -90,28 +90,28 @@ app.patch("/api/fields/:key", async (c) => {
 });
 
 app.get("/api/artworks", async (c) => c.json(await listSummaries(c.env, archivedParam(c.req.query("archived")))));
-app.post("/api/artworks", async (c) => c.json(await createArtwork(c.env, await c.req.json().catch(() => ({})), c.get("user").email), 201));
+app.post("/api/artworks", async (c) => c.json(await createArtwork(c.env, await c.req.json().catch(() => ({})), c.get("user").actor), 201));
 // Archive out of sight (reversible; DELETE is the soft delete). Bulk takes { ids: [...] }.
-app.post("/api/artworks/archive", async (c) => c.json(await setArtworksArchived(c.env, await c.req.json().catch(() => null), true, c.get("user").email)));
-app.post("/api/artworks/unarchive", async (c) => c.json(await setArtworksArchived(c.env, await c.req.json().catch(() => null), false, c.get("user").email)));
+app.post("/api/artworks/archive", async (c) => c.json(await setArtworksArchived(c.env, await c.req.json().catch(() => null), true, c.get("user").actor)));
+app.post("/api/artworks/unarchive", async (c) => c.json(await setArtworksArchived(c.env, await c.req.json().catch(() => null), false, c.get("user").actor)));
 // An archived piece still opens; `archived` here chooses its images.
 app.get("/api/artworks/:id", async (c) => c.json(await getArtwork(c.env, c.req.param("id"), archivedParam(c.req.query("archived")))));
-app.post("/api/artworks/:id/archive", async (c) => c.json(await setArtworkArchived(c.env, c.req.param("id"), true, c.get("user").email)));
-app.post("/api/artworks/:id/unarchive", async (c) => c.json(await setArtworkArchived(c.env, c.req.param("id"), false, c.get("user").email)));
-app.patch("/api/artworks/:id", async (c) => c.json(await updateArtwork(c.env, c.req.param("id"), await c.req.json().catch(() => null), c.get("user").email)));
-app.delete("/api/artworks/:id", async (c) => { await deleteArtwork(c.env, c.req.param("id"), c.get("user").email); return c.body(null, 204); });
+app.post("/api/artworks/:id/archive", async (c) => c.json(await setArtworkArchived(c.env, c.req.param("id"), true, c.get("user").actor)));
+app.post("/api/artworks/:id/unarchive", async (c) => c.json(await setArtworkArchived(c.env, c.req.param("id"), false, c.get("user").actor)));
+app.patch("/api/artworks/:id", async (c) => c.json(await updateArtwork(c.env, c.req.param("id"), await c.req.json().catch(() => null), c.get("user").actor)));
+app.delete("/api/artworks/:id", async (c) => { await deleteArtwork(c.env, c.req.param("id"), c.get("user").actor); return c.body(null, 204); });
 app.get("/api/artworks/:id/revisions", async (c) => c.json(await listRevisions(c.env, c.req.param("id"))));
 app.get("/api/artworks/:id/similar", async (c) => c.json(await similar(c.env, c.req.param("id"), intParam(c.req.query("k"), 8, 24))));
 
 app.post("/api/artworks/:id/images", async (c) => {
   const form = await c.req.formData().catch(() => { throw new HttpError(400, "Expected a multipart form upload"); });
-  const r = await addImage(c.env, c.req.param("id"), form, c.get("user").email);
+  const r = await addImage(c.env, c.req.param("id"), form, c.get("user").actor);
   return c.json(r, r.duplicate ? 200 : 201);
 });
 app.patch("/api/images/:id", async (c) => c.json(await updateImage(c.env, c.req.param("id"), await c.req.json().catch(() => null))));
 app.delete("/api/images/:id", async (c) => c.json(await deleteImage(c.env, c.req.param("id"))));
-app.post("/api/images/:id/archive", async (c) => c.json(await setImageArchived(c.env, c.req.param("id"), true, c.get("user").email)));
-app.post("/api/images/:id/unarchive", async (c) => c.json(await setImageArchived(c.env, c.req.param("id"), false, c.get("user").email)));
+app.post("/api/images/:id/archive", async (c) => c.json(await setImageArchived(c.env, c.req.param("id"), true, c.get("user").actor)));
+app.post("/api/images/:id/unarchive", async (c) => c.json(await setImageArchived(c.env, c.req.param("id"), false, c.get("user").actor)));
 
 app.get("/api/search", async (c) => c.json(await search(c.env, c.req.query("q") || "", intParam(c.req.query("limit"), 60, 200), archivedParam(c.req.query("archived")))));
 
@@ -146,7 +146,7 @@ app.get("/img/*", async (c) => {
   return new Response(obj.body, { headers });
 });
 
-app.all("/mcp", async (c) => handleMcp(c.req.raw, c.env, `mcp:${c.get("user").email}`));
+app.all("/mcp", async (c) => handleMcp(c.req.raw, c.env, `mcp:${c.get("user").actor}`));
 
 app.all("/api/*", (c) => c.json({ error: "Not found" }, 404));
 
