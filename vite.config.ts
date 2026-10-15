@@ -48,6 +48,9 @@ export default defineConfig(({ mode }) => {
     server: {
       port: prod ? 5174 : 5173,
       strictPort: true,
+      // `npm run tunnel` serves this through a Cloudflare Tunnel on DEV_TUNNEL_HOST,
+      // behind the same Access policy as the live app (see README).
+      allowedHosts: [env.DEV_TUNNEL_HOST || "archive-dev.sashua.org"],
       proxy: prod ? prodProxy({ ...env, ...process.env } as Record<string, string>) : localProxy(),
     },
     test: { include: ["tests/unit/**/*.test.ts"], environment: "node" },

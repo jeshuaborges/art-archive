@@ -83,6 +83,10 @@ This mode runs the UI from your working copy, so edits show instantly. `/api`, `
 
 - **Setup:** put the token in `.env.local`, which is gitignored and should be mode 600: `ARCHIVE_URL`, `CF_ACCESS_CLIENT_ID`, `CF_ACCESS_CLIENT_SECRET`. These are the same values as `art-archive-importer/.env`.
 - **Read-only by default:** the proxy refuses POST, PATCH, PUT and DELETE before they leave your machine. Set `ARCHIVE_ALLOW_WRITES=1` in `.env.local` only when you mean to change the live archive. Changes are then attributed to the service token, not to you.
+- **On a phone, through a Cloudflare Tunnel:** with `npm run dev:prod` running, run `npm run tunnel`. That serves the dev server at **https://archive-dev.sashua.org**, behind its own Access app with the same family policy as the live archive, so only signed-in family can reach it. On the iPhone, open that address, sign in, and Add to Home Screen to test the installed-app behaviour (safe areas, keyboard, login) on unreleased changes.
+  - **One-time setup, already done on Jeshua's Mac:** `brew install cloudflared`, `cloudflared tunnel login` (choose sashua.org), `cloudflared tunnel create archive-dev`, `cloudflared tunnel route dns archive-dev archive-dev.sashua.org`.
+  - **Config:** `~/.cloudflared/archive-dev.yml` points the hostname at `http://localhost:5174`. The tunnel credentials stay in `~/.cloudflared`.
+  - **Allowed host:** Vite allows that hostname through `allowedHosts`; to use another, set `DEV_TUNNEL_HOST`.
 - **Launchers:** `.claude/launch.json` has three entries for the desktop app's browser pane:
   - `archive-real-data` runs `dev:prod`.
   - `archive-local` runs `dev`.

@@ -15,7 +15,8 @@
     "test:e2e": "bash tests/run-e2e.sh",
     "deploy": "npm run build && wrangler d1 migrations apply DB --remote --env=\"\" && wrangler deploy --env=\"\"",
     "test": "npm run typecheck && npm run test:unit && npm run test:api && npm run test:e2e",
-    "dev:prod": "ARCHIVE_TARGET=prod vite"
+    "dev:prod": "ARCHIVE_TARGET=prod vite",
+    "tunnel": "cloudflared tunnel --no-autoupdate --config $HOME/.cloudflared/archive-dev.yml run"
   },
   "keywords": [],
   "author": "",
