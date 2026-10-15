@@ -2,6 +2,7 @@ import { useMemo, useRef } from "react";
 import type { Summary } from "../types";
 import { decadeOf, mediumOf, pct, STATUS_COLOR, yearLabel } from "../util";
 import { ICheck, IStack } from "./Icons";
+import { PreviewTile } from "./PreviewTile";
 
 interface Props {
   list: Summary[];           // already filtered
@@ -66,7 +67,7 @@ export function Wall({ list, ranked, matchOf, onOpen, selected, onToggle }: Prop
                             aria-label={selected ? `Select ${a.title || "Untitled"}` : `Open ${a.title || "Untitled"}`} aria-pressed={selected ? !!sel : undefined}
                             style={{ display: "block", width: "100%", padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)", animationDelay: `${Math.min(k++ * 40, 400)}ms` }}>
                             <div style={{ position: "relative", aspectRatio: String(asp), borderRadius: 14, overflow: "hidden", background: "#23201C", boxShadow: sel ? "0 0 0 3px var(--bg),0 0 0 5px var(--poppy)" : "0 10px 24px rgba(0,0,0,.35)", transition: "box-shadow .25s" }}>
-                              {a.thumb ? <img src={a.thumb} alt="" loading="lazy" draggable={false} className="art-img" /> : <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", fontSize: 12, color: "var(--faint)" }}>No image yet</div>}
+                              {a.thumb ? <img src={a.thumb} alt="" loading="lazy" draggable={false} className="art-img" /> : <PreviewTile state={a.preview} />}
                               {ranked && m !== undefined && <span style={{ position: "absolute", left: 8, top: 8, height: 24, padding: "0 8px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(42,37,71,.92)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700 }}>{pct(m)}</span>}
                               {a.archivedAt && !selected && <ArchivedBadge />}
                               {selected && (

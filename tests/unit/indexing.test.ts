@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  embedText, ftsRow, inlineStep, parseVisionOutput, runIndexing, shouldDescribe, sidecarKey, sidecarRecord, startIndexing, upsertDecision,
-  type DoStep, type Embedded, type IndexOps, type UpsertOutcome,
+  describeKeyFor, embedText, ftsRow, inlineStep, parseVisionOutput, runIndexing, shouldDescribe, sidecarKey, sidecarRecord, startIndexing, upsertDecision,
+  type DoStep, type Embedded, type IndexOps, type PreviewOutcome, type TierOutcome, type UpsertOutcome,
 } from "../../worker/indexing";
 import { parseFieldDef } from "../../worker/fields";
 import { indexOps, type ArtworkDTO, type Env } from "../../worker/store";
@@ -45,7 +45,7 @@ describe("indexing text builders", () => {
     const image = (id: string, archivedAt: string | null) => ({
       id, artworkId: "a1", kind: "work", role: "", caption: null, takenOn: null, width: 1, height: 1, bytes: 1, contentType: "image/jpeg", sha256: id,
       palette: [], sortOrder: 0, createdAt: "2026-01-01", archivedAt, archivedBy: archivedAt ? "anne@x" : null,
-      original: `/img/artworks/2020-001/${id}.jpg`, display: null, thumb: null,
+      original: `/img/artworks/2020-001/${id}.jpg`, download: `/img/artworks/2020-001/${id}.jpg?download=1`, display: null, thumb: null, preview: "pending",
     });
     const rec = sidecarRecord(art({ archivedAt: "2026-10-01", archivedBy: "anne@x", images: [image("k1", null), image("k2", "2026-10-02")] as ArtworkDTO["images"] }), defs, {});
     expect(rec.archived).toEqual({ at: "2026-10-01", by: "anne@x" });
@@ -83,10 +83,13 @@ describe("vision decisions", () => {
 });
 
 // ----------------------------------------------------------- orchestration
+const made = (displayKey: string | null, paletteChanged = false): PreviewOutcome => ({ status: "made", displayKey, paletteChanged });
 function fakeOps(o: Partial<Record<keyof IndexOps, () => unknown>> = {}) {
   const calls: string[] = [];
   const vec: Embedded = { text: "t", vec: [0.1, 0.2] };
   const ops: IndexOps = {
+    preview: async (id) => { calls.push(`preview:${id}`); return (o.preview ? o.preview() : made("artworks/x/k-display.webp")) as PreviewOutcome; },
+    tierOriginal: async (id) => { calls.push(`tier:${id}`); return (o.tierOriginal ? o.tierOriginal() : "moved") as TierOutcome; },
     describe: async (key) => { calls.push(`describe:${key}`); return (o.describe ? o.describe() : true) as boolean; },
     refreshText: async () => { calls.push("refreshText"); return true; },
     embed: async () => { calls.push("embed"); return (o.embed ? o.embed() : vec) as Embedded | null; },
@@ -105,27 +108,58 @@ describe("runIndexing", () => {
   it("describes, refreshes the text, embeds and upserts, in that order", async () => {
     const { ops, calls } = fakeOps();
     const { steps, doStep } = recordingStep();
-    const r = await runIndexing({ artworkId: "a1", describeKey: "artworks/x/k.jpg" }, ops, doStep);
-    expect(calls).toEqual(["describe:artworks/x/k.jpg", "refreshText", "embed", "upsert:2"]);
+    const r = await runIndexing({ artworkId: "a1", describeKey: "artworks/x/k-display.jpg" }, ops, doStep);
+    expect(calls).toEqual(["describe:artworks/x/k-display.jpg", "refreshText", "embed", "upsert:2"]);
     expect(steps.map((s) => s.name)).toEqual(["describe", "refresh-text", "embed", "upsert"]);
     expect(steps.every((s) => (s.limit ?? 0) > 0)).toBe(true);
-    expect(r).toEqual({ artworkId: "a1", described: true, outcome: "upserted" });
+    expect(r).toEqual({ artworkId: "a1", preview: null, tiered: null, described: true, outcome: "upserted" });
+  });
+  it("makes missing previews first, then describes the new display preview", async () => {
+    const { ops, calls } = fakeOps({ preview: () => made("artworks/x/k-display.webp", true) });
+    const { steps, doStep } = recordingStep();
+    const r = await runIndexing({ artworkId: "a1", previewImageId: "i1", describePreview: true }, ops, doStep);
+    expect(calls).toEqual(["preview:i1", "describe:artworks/x/k-display.webp", "refreshText", "embed", "upsert:2"]);
+    expect(steps[0]).toMatchObject({ name: "preview" });
+    expect(steps[0].limit).toBeGreaterThan(0);
+    expect(r.preview).toBe("made");
+  });
+  it("a new palette alone refreshes the text; no description unless asked for", async () => {
+    const { ops, calls } = fakeOps({ preview: () => made("artworks/x/k-display.webp", true) });
+    await runIndexing({ artworkId: "a1", previewImageId: "i1" }, ops, inlineStep);
+    expect(calls).toEqual(["preview:i1", "refreshText", "embed", "upsert:2"]);
+  });
+  it("a preview that can't be made (or keeps failing) skips the description but not the embedding", async () => {
+    const skipped = fakeOps({ preview: () => ({ status: "skipped", displayKey: null, paletteChanged: false }) });
+    await runIndexing({ artworkId: "a1", previewImageId: "i1", describePreview: true }, skipped.ops, inlineStep);
+    expect(skipped.calls).toEqual(["preview:i1", "embed", "upsert:2"]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failing = fakeOps({ preview: () => { throw new Error("Images down"); } });
+    const r = await runIndexing({ artworkId: "a1", previewImageId: "i1", describePreview: true }, failing.ops, inlineStep);
+    expect(failing.calls).toEqual(["preview:i1", "embed", "upsert:2"]);
+    expect(r).toMatchObject({ preview: "skipped", described: false, outcome: "upserted" });
+    warn.mockRestore();
+  });
+  it("moves an old original to Infrequent Access after its preview, when the backfill asks", async () => {
+    const { ops, calls } = fakeOps();
+    const r = await runIndexing({ artworkId: "a1", previewImageId: "i1", tierOriginalImageId: "i1" }, ops, inlineStep);
+    expect(calls.slice(0, 2)).toEqual(["preview:i1", "tier:i1"]);
+    expect(r.tiered).toBe("moved");
   });
   it("skips describe without a key, and refresh-text when nothing was written", async () => {
     const a = fakeOps();
     await runIndexing({ artworkId: "a1" }, a.ops, inlineStep);
     expect(a.calls).toEqual(["embed", "upsert:2"]);
     const b = fakeOps({ describe: () => false });
-    const r = await runIndexing({ artworkId: "a1", describeKey: "k" }, b.ops, inlineStep);
-    expect(b.calls).toEqual(["describe:k", "embed", "upsert:2"]);
+    const r = await runIndexing({ artworkId: "a1", describeKey: "k-display.jpg" }, b.ops, inlineStep);
+    expect(b.calls).toEqual(["describe:k-display.jpg", "embed", "upsert:2"]);
     expect(r.described).toBe(false);
   });
   it("a failed description doesn't block the embedding", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { ops, calls } = fakeOps({ describe: () => { throw new Error("vision down"); } });
-    const r = await runIndexing({ artworkId: "a1", describeKey: "k" }, ops, inlineStep);
-    expect(calls).toEqual(["describe:k", "embed", "upsert:2"]);
-    expect(r).toEqual({ artworkId: "a1", described: false, outcome: "upserted" });
+    const r = await runIndexing({ artworkId: "a1", describeKey: "k-display.jpg" }, ops, inlineStep);
+    expect(calls).toEqual(["describe:k-display.jpg", "embed", "upsert:2"]);
+    expect(r).toEqual({ artworkId: "a1", preview: null, tiered: null, described: false, outcome: "upserted" });
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -139,6 +173,16 @@ describe("runIndexing", () => {
   it("embedding failures propagate so the step (or the request, inline) fails", async () => {
     const { ops } = fakeOps({ embed: () => { throw new Error("AI down"); } });
     await expect(runIndexing({ artworkId: "a1" }, ops, inlineStep)).rejects.toThrow("AI down");
+  });
+});
+
+describe("describeKeyFor", () => {
+  it("only ever hands the vision step a display preview", () => {
+    expect(describeKeyFor({ artworkId: "a1", describeKey: "artworks/x/k-display.jpg" }, null)).toBe("artworks/x/k-display.jpg");
+    expect(describeKeyFor({ artworkId: "a1", describeKey: "artworks/x/k.heic" }, null)).toBeNull();
+    expect(describeKeyFor({ artworkId: "a1", describePreview: true }, made("artworks/x/k-display.webp"))).toBe("artworks/x/k-display.webp");
+    expect(describeKeyFor({ artworkId: "a1", describePreview: true }, made(null))).toBeNull();
+    expect(describeKeyFor({ artworkId: "a1" }, made("artworks/x/k-display.webp"))).toBeNull();
   });
 });
 
@@ -195,13 +239,19 @@ describe("describe step", () => {
   it("does nothing offline, over an existing description, or without the image", async () => {
     for (const o of [{ embeddings: "local" }, { row: { ai_description: "Mine", deleted_at: null } }, { row: null }, { object: false }]) {
       const { env, ai, sql } = describeEnv(o);
-      expect(await indexOps(env, "a1").describe("k")).toBe(false);
+      expect(await indexOps(env, "a1").describe("artworks/x/k-display.jpg")).toBe(false);
       expect(ai).toEqual([]);
       expect(sql.some((s) => s.q.startsWith("UPDATE"))).toBe(false);
     }
   });
   it("throws on an empty answer so the step retries", async () => {
     const { env } = describeEnv({ out: { response: "" } });
-    await expect(indexOps(env, "a1").describe("k")).rejects.toThrow(/no description/);
+    await expect(indexOps(env, "a1").describe("artworks/x/k-display.jpg")).rejects.toThrow(/no description/);
+  });
+  it("never reads an original, whatever key it is handed", async () => {
+    const { env, ai, sql } = describeEnv();
+    expect(await indexOps(env, "a1").describe("artworks/x/k.heic")).toBe(false);
+    expect(ai).toEqual([]);
+    expect(sql).toEqual([]);
   });
 });

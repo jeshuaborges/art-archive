@@ -43,6 +43,12 @@
   // embedding and Vectorize upsert as retried steps. Not inherited by named envs,
   // so `dev` has no INDEXER and runs the same steps inline.
   "workflows": [{ "name": "art-archive-indexer", "binding": "INDEXER", "class_name": "ArtworkIndexer" }],
+  // Cloudflare Images: makes the display/thumb previews (as a Workflow step) for
+  // uploads the phone couldn't, e.g. HEIC in a browser that can't decode it.
+  // Not inherited by named envs, so `dev` has no IMAGES and those previews stay
+  // "pending" there. Originals are written to R2 Infrequent Access in code
+  // (worker/media.ts); previews, record.json and backups stay Standard.
+  "images": { "binding": "IMAGES" },
 
   "env": {
     // ------------------------------------------------------------- local dev

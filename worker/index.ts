@@ -9,6 +9,7 @@ import {
 } from "./store";
 import { vectorBackend } from "./embed";
 import { ARCHIVED_MODES, parseArchivedMode } from "./archive";
+import { imgAccess } from "./media";
 
 export { ArtworkIndexer } from "./indexer";
 
@@ -120,13 +121,17 @@ app.get("/api/admin/backups", async (c) => {
   return c.json(list.objects.map((o) => ({ key: o.key, bytes: o.size, uploaded: o.uploaded })).sort((a, b) => b.key.localeCompare(a.key)));
 });
 
-// Images: originals are never modified; display and thumbnail variants are
-// generated on the phone at upload time so the app works without Images.
+// Images: originals are never modified, and live in Infrequent Access, so they
+// are sent only as an explicit download (?download=1). The app shows the display
+// and thumbnail previews (Standard), made on the phone at upload time or, when
+// it couldn't, by Cloudflare Images in the indexing Workflow.
 app.get("/img/*", async (c) => {
   let key: string;
   try { key = c.req.path.slice("/img/".length).split("/").map(decodeURIComponent).join("/"); }
   catch { throw new HttpError(404, "Not found"); }
   if (!key.startsWith("artworks/") || key.includes("..")) throw new HttpError(404, "Not found");
+  const download = !!c.req.query("download");
+  if (imgAccess(key, download) === "download-only") throw new HttpError(403, "Originals are only sent as downloads. Add ?download=1.");
   const etag = c.req.header("If-None-Match");
   const obj = await c.env.BUCKET.get(key, etag ? { onlyIf: { etagDoesNotMatch: etag.replace(/"/g, "") } } : undefined);
   if (!obj) throw new HttpError(404, "Not found");
@@ -137,7 +142,7 @@ app.get("/img/*", async (c) => {
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox");
   if (!("body" in obj) || !obj.body) return new Response(null, { status: 304, headers });
-  if (c.req.query("download")) headers.set("Content-Disposition", `attachment; filename="${key.split("/").pop()}"`);
+  if (download) headers.set("Content-Disposition", `attachment; filename="${key.split("/").pop()}"`);
   return new Response(obj.body, { headers });
 });
 

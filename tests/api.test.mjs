@@ -127,26 +127,36 @@ describe("artworks", () => {
       img1 = r.body.image;
       assert.equal(r.body.duplicate, false);
       assert.match(img1.original, /^\/img\/artworks\/2019-\d{3}\/[0-9a-f]{16}\.jpg$/);
+      assert.equal(img1.download, img1.original + "?download=1");
       assert.match(img1.display, /-display\.jpg$/);
       assert.match(img1.thumb, /-thumb\.jpg$/);
+      assert.equal(img1.preview, "ready");
       const art = await j(`/api/artworks/${a.id}`);
       assert.equal(art.body.coverImageId, img1.id);
       assert.deepEqual(art.body.palette, ["#C83C28", "#3050C0"]);
     });
-    test("serves originals with caching, 304s and no path traversal", async () => {
-      const r = await fetch(BASE + img1.original);
-      assert.equal(r.status, 200);
-      assert.equal(r.headers.get("content-type"), "image/jpeg");
-      const etag = r.headers.get("etag");
+    test("serves previews with caching and 304s; originals only as a download; no path traversal", async () => {
+      const d = await fetch(BASE + img1.display);
+      assert.equal(d.status, 200);
+      assert.equal(d.headers.get("content-type"), "image/jpeg");
+      const etag = d.headers.get("etag");
       assert.ok(etag);
-      assert.match(r.headers.get("cache-control"), /immutable/);
-      const meta = await sharp(Buffer.from(await r.arrayBuffer())).metadata();
-      assert.equal(meta.width, 800);
-      assert.equal((await fetch(BASE + img1.original, { headers: { "If-None-Match": etag } })).status, 304);
+      assert.match(d.headers.get("cache-control"), /immutable/);
+      assert.equal((await sharp(Buffer.from(await d.arrayBuffer())).metadata()).width, 400);
+      assert.equal((await fetch(BASE + img1.display, { headers: { "If-None-Match": etag } })).status, 304);
+      assert.equal((await fetch(BASE + img1.thumb)).status, 200);
+      // the original (Infrequent Access) is never sent for display
+      const plain = await fetch(BASE + img1.original);
+      assert.equal(plain.status, 403);
+      assert.equal((await fetch(BASE + img1.original, { headers: { "If-None-Match": etag } })).status, 403);
+      // "Download original" still works
+      const dl = await fetch(BASE + img1.download);
+      assert.equal(dl.status, 200);
+      assert.match(dl.headers.get("content-disposition"), /attachment/);
+      assert.equal(dl.headers.get("content-type"), "image/jpeg");
+      assert.equal((await sharp(Buffer.from(await dl.arrayBuffer())).metadata()).width, 800);
       assert.equal((await fetch(BASE + "/img/backups/x.json")).status, 404);
       assert.equal((await fetch(BASE + "/img/artworks/%2e%2e/secret")).status, 404);
-      const dl = await fetch(BASE + img1.original + "?download=1");
-      assert.match(dl.headers.get("content-disposition"), /attachment/);
     });
     test("keeps many images per piece of different kinds; detects duplicates", async () => {
       const s = await upload(a.id, await jpeg({ r: 120, g: 120, b: 120 }), { kind: "study", role: "Thumbnail sketch" });
@@ -159,8 +169,39 @@ describe("artworks", () => {
       assert.equal(dupe.body.duplicate, true);
       const art = await j(`/api/artworks/${a.id}`);
       assert.deepEqual(art.body.images.map((i) => i.kind), ["work", "progress", "study", "reference"]);
+      // no phone-made previews (e.g. HEIC the browser couldn't decode): never the original, a pending preview instead
       const noVariant = art.body.images.find((i) => i.kind === "progress");
-      assert.equal(noVariant.display, noVariant.original, "falls back to the original when no variant was made");
+      assert.equal(noVariant.display, null);
+      assert.equal(noVariant.thumb, null);
+      assert.equal(noVariant.preview, "pending", "dev has no Images binding, so the preview stays pending");
+      assert.ok(noVariant.download.endsWith("?download=1"));
+      assert.equal((await fetch(BASE + noVariant.original)).status, 403);
+      assert.equal((await fetch(BASE + noVariant.download)).status, 200);
+    });
+    test("an upload without previews never shows its original anywhere, and one the server can't preview says so", async () => {
+      const p = (await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Pending preview" }) })).body;
+      const r = await upload(p.id, await jpeg({ r: 30, g: 90, b: 160 }), { kind: "work", role: "Front" }, { variants: false });
+      assert.equal(r.status, 201);
+      assert.equal(r.body.image.preview, "pending");
+      assert.equal(r.body.image.display, null);
+      const art = (await j(`/api/artworks/${p.id}`)).body;
+      assert.equal(art.cover.id, r.body.image.id);
+      assert.equal(art.cover.display, null);
+      const s = (await j("/api/artworks")).body.find((x) => x.id === p.id);
+      assert.equal(s.preview, "pending");
+      assert.equal(s.thumb, null);
+      assert.equal(s.display, null);
+      // the MCP view links previews only
+      const g = await j("/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_artwork", arguments: { id: p.id } } }) });
+      const img = JSON.parse(g.body.result.content[0].text).images[0];
+      assert.equal(img.url, null);
+      assert.equal(img.preview, "pending");
+      const tif = await sharp({ create: { width: 60, height: 40, channels: 3, background: { r: 1, g: 2, b: 3 } } }).tiff().toBuffer();
+      const t = await upload(p.id, tif, { kind: "study" }, { name: "scan.tif", type: "image/tiff", variants: false });
+      assert.equal(t.status, 201);
+      assert.equal(t.body.image.preview, "unavailable", "Cloudflare Images can't read TIFF");
+      assert.equal(t.body.image.display, null);
+      assert.equal((await fetch(BASE + t.body.image.download)).status, 200);
     });
     test("rejects non-images, missing files and bad metadata", async () => {
       const txt = await upload(a.id, Buffer.from("hello"), {}, { name: "notes.txt", type: "text/plain", variants: false });
@@ -309,7 +350,7 @@ describe("review fixes", () => {
     fd.append("original", new File([await jpeg({ r: 5, g: 6, b: 7 })], "a.jpg", { type: "image/jpeg" }));
     fd.append("thumb", new File([Buffer.from("<svg/>")], "t.jpg", { type: "image/jpeg" }));
     assert.equal((await j(`/api/artworks/${a.id}/images`, { method: "POST", body: fd })).status, 415);
-    const img = await fetch(BASE + ok.body.image.original);
+    const img = await fetch(BASE + ok.body.image.download);
     assert.equal(img.headers.get("x-content-type-options"), "nosniff");
     assert.match(img.headers.get("content-security-policy"), /sandbox/);
   });

@@ -27,11 +27,15 @@ export interface Summary {
   archivedAt: string | null; // archived: out of sight, not deleted
   thumb: string | null;
   display: string | null;
+  preview: PreviewState | null; // of the cover; null when there is no image
   aspect: number | null;
   imageCount: number;
 }
 
 export type ImageKind = "work" | "progress" | "study" | "reference";
+
+/** ready: display/thumb are set. pending: the server is still making them. unavailable: it can't (download the original). */
+export type PreviewState = "ready" | "pending" | "unavailable";
 
 export interface ImageDTO {
   id: string;
@@ -50,12 +54,14 @@ export interface ImageDTO {
   createdAt: string;
   archivedAt: string | null;
   archivedBy: string | null;
-  original: string;
-  display: string;
-  thumb: string;
+  original: string;              // names the file; only `download` fetches it
+  download: string;
+  display: string | null;        // previews only: never the original
+  thumb: string | null;
+  preview: PreviewState;
 }
 
-export interface Artwork extends Omit<Summary, "thumb" | "display" | "aspect" | "imageCount"> {
+export interface Artwork extends Omit<Summary, "thumb" | "display" | "preview" | "aspect" | "imageCount"> {
   aiDescription: string | null;
   coverImageId: string | null;
   createdAt: string;

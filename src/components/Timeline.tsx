@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Summary } from "../types";
 import { clamp, decadeOf, frameStyle, mediumOf, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
+import { PreviewTile } from "./PreviewTile";
 import { ArchivedBadge } from "./Wall";
 
 const SP = 78; // px between thumbnails on the strip
@@ -136,7 +137,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel }:
               <div key={a.id} className={dir === 0 ? "heroin" : ""} style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", opacity: dir === 0 ? 1 : 0, transform: `translateX(${dir * 60}px) scale(${dir === 0 ? 1 : 0.92})`, transition: "opacity .5s, transform .7s var(--ease-out)", pointerEvents: "none" }}>
                 <div style={frameStyle(mediumOf(a))}>
                   {a.display ? <img src={a.display} alt={dir === 0 ? a.title || "Untitled" : ""} draggable={false} style={{ width: Math.round(w), height: Math.round(hh), objectFit: "cover", background: "#23201C" }} />
-                    : <div style={{ width: Math.round(w), height: Math.round(hh), display: "grid", placeItems: "center", background: "#23201C", color: "var(--faint)", fontSize: 13 }}>No image yet</div>}
+                    : <div style={{ position: "relative", width: Math.round(w), height: Math.round(hh) }}><PreviewTile state={a.preview} /></div>}
                 </div>
               </div>
             );
@@ -180,7 +181,7 @@ export function Timeline({ list, index, onIndex, onOpen, matchOf, statusLabel }:
                     transform: `translateY(${-near * 8}px) scale(${1 + near * 0.32 - Math.min(d, 3) * 0.04})`, opacity: 1 - Math.min(d, 4) * 0.16,
                     boxShadow: on ? "0 12px 26px rgba(0,0,0,.55),0 0 0 2px #F3EFE8" : "0 4px 10px rgba(0,0,0,.35)",
                     transition: drag !== null ? "none" : "transform .45s var(--ease-out), opacity .3s, box-shadow .3s" }}>
-                  {a.thumb && <img src={a.thumb} alt="" draggable={false} loading="lazy" className="art-img" />}
+                  {a.thumb ? <img src={a.thumb} alt="" draggable={false} loading="lazy" className="art-img" /> : <PreviewTile state={a.preview} compact />}
                 </button>
                 <span aria-hidden style={{ position: "absolute", top: 84, left: i * SP, width: 60, textAlign: "center", fontFamily: "var(--mono)", fontSize: 10, color: on ? "var(--text)" : "#6E685F" }}>{a.yearStart ?? "—"}</span>
               </div>

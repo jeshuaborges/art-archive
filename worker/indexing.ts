@@ -2,7 +2,8 @@
  * Indexing: the functional core.
  *
  * Pure builders (FTS row, record.json, embedding text, vision prompt/parsing and
- * the decisions) plus `runIndexing`, which sequences the slow steps. The steps
+ * the decisions) plus `runIndexing`, which sequences the slow steps (including
+ * making an upload's previews on the server when the phone couldn't). The steps
  * themselves are I/O and live in store.ts (`indexOps`); `runIndexing` gets them
  * injected along with a step runner: the `ArtworkIndexer` Workflow's `step.do`
  * in production, or `inlineStep` (call it now) in local dev and as a fallback.
@@ -11,9 +12,17 @@
 import type { WorkflowStepConfig } from "cloudflare:workers";
 import { colorName } from "./embed";
 import { formatValue, searchText, type FieldDef } from "./fields";
+import { describeSource } from "./media";
 import type { ArtworkDTO } from "./store";
 
-export interface IndexParams { artworkId: string; describeKey?: string }
+/**
+ * `describeKey`: a display preview to describe. `previewImageId`: an image whose
+ * previews the server must make first; with `describePreview`, its new display
+ * preview is then described (it is the piece's new main image). `tierOriginalImageId`:
+ * move that image's original (uploaded before originals went to Infrequent
+ * Access) to Infrequent Access; only scripts/originals-to-ia.mjs asks for it.
+ */
+export interface IndexParams { artworkId: string; describeKey?: string; previewImageId?: string; describePreview?: boolean; tierOriginalImageId?: string }
 
 // ----------------------------------------------------------- text builders
 export function describeLocally(a: ArtworkDTO): string {
@@ -100,6 +109,10 @@ export function upsertDecision(currentText: string | null, embeddedText: string)
 // ----------------------------------------------------------- orchestration
 /** The I/O behind each step, bound to one artwork. Each must be idempotent and return JSON. */
 export interface IndexOps {
+  /** Make the image's missing previews (Cloudflare Images) and record them. Throws to retry. */
+  preview(imageId: string): Promise<PreviewOutcome>;
+  /** Rewrite the image's original in Infrequent Access, unless it already is. Throws to retry. */
+  tierOriginal(imageId: string): Promise<TierOutcome>;
   /** Write ai_description from the vision model; true if one was written. Throws to retry. */
   describe(key: string): Promise<boolean>;
   /** Re-sync FTS and record.json; false if the piece is gone. */
@@ -108,6 +121,11 @@ export interface IndexOps {
   embed(): Promise<Embedded | null>;
   upsert(e: Embedded): Promise<UpsertOutcome>;
 }
+/** `displayKey`: the image's display preview, if it has one now. `paletteChanged`: the piece's palette was filled in. */
+export interface PreviewOutcome { status: "made" | "ready" | "skipped" | "gone"; displayKey: string | null; paletteChanged: boolean }
+export type TierOutcome = "moved" | "already" | "gone";
+const NO_PREVIEW: PreviewOutcome = { status: "skipped", displayKey: null, paletteChanged: false };
+
 export type DoStep = <T>(name: string, config: WorkflowStepConfig, fn: () => Promise<T>) => Promise<T>;
 
 /** Local dev / fallback: run the step now, once. */
@@ -115,25 +133,47 @@ export const inlineStep: DoStep = (_name, _config, fn) => fn();
 
 const retry = (limit: number, delay: `${number} seconds`) => ({ limit, delay, backoff: "exponential" as const });
 export const STEPS = {
+  preview: { retries: retry(3, "20 seconds"), timeout: "2 minutes" },
+  tierOriginal: { retries: retry(3, "30 seconds"), timeout: "5 minutes" },
   describe: { retries: retry(2, "15 seconds"), timeout: "2 minutes" },
   refreshText: { retries: retry(5, "5 seconds"), timeout: "30 seconds" },
   embed: { retries: retry(5, "10 seconds"), timeout: "1 minute" },
   upsert: { retries: retry(5, "10 seconds"), timeout: "30 seconds" },
 } satisfies Record<string, WorkflowStepConfig>;
 
+/** The key the vision step may read: a display preview only, never an original. */
+export function describeKeyFor(params: IndexParams, preview: PreviewOutcome | null): string | null {
+  if (params.describeKey) return describeSource(params.describeKey);
+  return params.describePreview && preview ? describeSource(preview.displayKey) : null;
+}
+
 export async function runIndexing(params: IndexParams, ops: IndexOps, doStep: DoStep) {
+  let preview: PreviewOutcome | null = null;
+  if (params.previewImageId) {
+    const imageId = params.previewImageId;
+    // Without previews the piece shows a "being made" tile; search must not wait on it.
+    try { preview = await doStep("preview", STEPS.preview, () => ops.preview(imageId)); }
+    catch (e) { console.warn("preview failed", params.artworkId, imageId, e); preview = NO_PREVIEW; }
+  }
+  // After the preview, which reads the original while it is still Standard (no retrieval fee).
+  let tiered: TierOutcome | null = null;
+  if (params.tierOriginalImageId) {
+    const imageId = params.tierOriginalImageId;
+    try { tiered = await doStep("tier-original", STEPS.tierOriginal, () => ops.tierOriginal(imageId)); }
+    catch (e) { console.warn("moving the original to Infrequent Access failed", params.artworkId, imageId, e); }
+  }
   let described = false;
-  if (params.describeKey) {
-    const key = params.describeKey;
+  const key = describeKeyFor(params, preview);
+  if (key) {
     // A missing description must not block search: give up on it and carry on.
     try { described = await doStep("describe", STEPS.describe, () => ops.describe(key)); }
     catch (e) { console.warn("vision description failed", params.artworkId, e); }
   }
-  // FTS and record.json include the description, so refresh them once it exists.
-  if (described) await doStep("refresh-text", STEPS.refreshText, () => ops.refreshText());
+  // FTS and record.json include the description and palette, so refresh them once either changes.
+  if (described || preview?.paletteChanged) await doStep("refresh-text", STEPS.refreshText, () => ops.refreshText());
   const embedded = await doStep("embed", STEPS.embed, () => ops.embed());
   const outcome: UpsertOutcome = embedded ? await doStep("upsert", STEPS.upsert, () => ops.upsert(embedded)) : "deleted";
-  return { artworkId: params.artworkId, described, outcome };
+  return { artworkId: params.artworkId, preview: preview?.status ?? null, tiered, described, outcome };
 }
 
 /** Start the Workflow when bound; otherwise (or if it won't start) index inline so nothing is lost. */

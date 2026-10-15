@@ -76,7 +76,7 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, b
     }
     case "get_artwork": {
       const a = await getArtwork(env, String(args.id || ""), "include");
-      return text({ ...a, images: a.images.map((i) => ({ id: i.id, kind: i.kind, role: i.role, caption: i.caption, url: i.display, archivedAt: i.archivedAt })) });
+      return text({ ...a, images: a.images.map((i) => ({ id: i.id, kind: i.kind, role: i.role, caption: i.caption, url: i.display, preview: i.preview, archivedAt: i.archivedAt })) });
     }
     case "list_fields":
       return text(await loadFieldDefs(env.DB));

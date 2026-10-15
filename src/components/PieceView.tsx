@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
-import type { Artwork, FieldDef, ImageDTO, ImageKind, Summary } from "../types";
+import type { Artwork, FieldDef, ImageDTO, ImageKind, PreviewState, Summary } from "../types";
 import { clamp, KIND_META, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
 import { IArchive, IBack, IDownload, IMore, IPlus, ISpark, IStar, ITag, ITrash, ICheck } from "./Icons";
+import { PreviewTile } from "./PreviewTile";
 import { ROLES } from "./UploadSheet";
 
 export interface PendingUpload { tempId: string; artworkId: string; previewUrl: string; kind: ImageKind; role: string; progress: number; error?: string }
@@ -80,6 +81,24 @@ export function PieceView(p: Props) {
     api.similar(id).then(setSimilar).catch(() => setSimilar([]));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, p.reloadKey]);
+
+  // Previews the server is still making (e.g. for a HEIC upload) appear on their
+  // own: look again a few times, backing off, then tell the lists once they're in.
+  const previewsPending = !!art?.images.some((i) => i.preview === "pending");
+  const polls = useRef({ n: 0, waiting: false });
+  useEffect(() => { polls.current = { n: 0, waiting: false }; }, [id]);
+  useEffect(() => {
+    if (!id || !art) return;
+    if (!previewsPending) {
+      if (polls.current.waiting) { polls.current.waiting = false; p.onChanged(); }
+      return;
+    }
+    if (polls.current.n >= 5) return;
+    polls.current.waiting = true;
+    const t = setTimeout(() => { polls.current.n++; load(id, true); }, 4000 * 2 ** polls.current.n);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, art, previewsPending, load]);
 
   // Escape closes (when not editing)
   useEffect(() => {
@@ -259,7 +278,7 @@ export function PieceView(p: Props) {
             <div onPointerDown={cDown} onPointerMove={cMove} onPointerUp={cUp} onPointerCancel={cUp} data-testid="carousel"
               style={{ position: "relative", height: 330, overflow: "hidden", touchAction: "pan-y" }}>
               <div style={{ display: "flex", height: "100%", transform: `translateX(calc(${-safeIdx * 100}% + ${cdx}px))`, transition: cDrag ? "none" : "transform .5s var(--ease-out)" }}>
-                {images.map((im) => <Slide key={im.id} src={im.display} aspect={im.width && im.height ? im.width / im.height : asp} label={`${KIND_META[im.kind].short} · ${im.role || KIND_META[im.kind].label}${im.archivedAt ? " · archived" : ""}`} color={KIND_META[im.kind].color} cover={im.id === art.coverImageId} />)}
+                {images.map((im) => <Slide key={im.id} src={im.display} preview={im.preview} aspect={im.width && im.height ? im.width / im.height : asp} label={`${KIND_META[im.kind].short} · ${im.role || KIND_META[im.kind].label}${im.archivedAt ? " · archived" : ""}`} color={KIND_META[im.kind].color} cover={im.id === art.coverImageId} />)}
                 {pend.map((u) => <Slide key={u.tempId} src={u.previewUrl} aspect={asp} label={`${KIND_META[u.kind].short} · ${u.role}`} color={KIND_META[u.kind].color} progress={u.progress} error={u.error} />)}
                 {kind !== "archived" && <div style={{ flex: "none", width: "100%", height: "100%", display: "grid", placeItems: "center" }}>
                   <button className="press" onClick={() => p.onAddImages(art.id, kind === "all" || kind === "work" ? 4 : ROLES.findIndex((r) => r.kind === kind))} data-testid="add-image-slide"
@@ -388,7 +407,7 @@ export function PieceView(p: Props) {
                           onClick={() => { setKind("all"); setIdx(art.images.findIndex((x) => x.id === im.id)); scroller.current?.scrollTo({ top: 0, behavior: "smooth" }); }}
                           style={{ position: "relative", width: 100, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
                           <div style={{ width: 100, height: 92, borderRadius: 12, overflow: "hidden", background: "#23201C", boxShadow: on ? `0 0 0 2px var(--bg-2),0 0 0 4px ${KIND_META[im.kind].color}` : "0 6px 16px rgba(0,0,0,.35)", transition: "box-shadow .3s" }}>
-                            <img src={im.thumb} alt="" loading="lazy" className="art-img" draggable={false} />
+                            {im.thumb ? <img src={im.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <div style={{ position: "relative", width: "100%", height: "100%" }}><PreviewTile state={im.preview} compact /></div>}
                           </div>
                           <span style={{ position: "absolute", left: 6, top: 6, width: 22, height: 22, borderRadius: 99, background: "rgba(18,17,15,.8)", display: "grid", placeItems: "center", fontFamily: "var(--mono)", fontSize: 10.5, fontWeight: 600 }}>{j + 1}</span>
                           <span className="mono" style={{ display: "block", marginTop: 9, fontSize: 9.5, letterSpacing: ".12em", color: KIND_META[im.kind].color }}>{KIND_META[im.kind].short}</span>
@@ -417,7 +436,7 @@ export function PieceView(p: Props) {
                       <button key={s.id} className="press" onClick={() => p.onOpen(s.id)} aria-label={`Open ${s.a.title || "Untitled"}, ${pct(s.match)} similar`}
                         style={{ width: 132, padding: 0, border: 0, background: "transparent", textAlign: "left", color: "var(--text)" }}>
                         <div style={{ position: "relative", width: 132, height: 132, borderRadius: 14, overflow: "hidden", background: "#23201C" }}>
-                          {s.a.thumb && <img src={s.a.thumb} alt="" loading="lazy" className="art-img" draggable={false} />}
+                          {s.a.thumb ? <img src={s.a.thumb} alt="" loading="lazy" className="art-img" draggable={false} /> : <PreviewTile state={s.a.preview} compact />}
                           <span style={{ position: "absolute", left: 7, top: 7, height: 22, padding: "0 7px", display: "flex", alignItems: "center", borderRadius: 99, background: "rgba(42,37,71,.92)", color: "var(--lupine-soft)", fontSize: 11, fontWeight: 700 }}>{pct(s.match)}</span>
                         </div>
                         <span className="clamp2" style={{ marginTop: 7, fontSize: 12.5, fontWeight: 600, lineHeight: 1.3 }}>{s.a.title || "Untitled"}</span>
@@ -461,24 +480,24 @@ export function PieceView(p: Props) {
             {menu === "main" && curImage.archivedAt && (
               <>
                 <div style={{ padding: "8px 10px 12px", display: "flex", alignItems: "center", gap: 12 }}>
-                  <img src={curImage.thumb} alt="" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8, opacity: 0.7 }} />
+                  <MenuThumb im={curImage} dim />
                   <div><div style={{ fontWeight: 600 }}>{curImage.role || KIND_META[curImage.kind].label}</div><div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>ARCHIVED · {KIND_META[curImage.kind].short}</div></div>
                 </div>
                 <MenuItem icon={<IArchive />} label="Unarchive image" onClick={() => imageAction(() => api.unarchiveImage(curImage.id), "Image back on this piece").then(() => setIdx((i) => Math.max(0, i - 1)))} testId="unarchive-image" />
-                <a href={`${curImage.original}?download=1`} style={{ textDecoration: "none" }}><MenuItem icon={<IDownload />} label="Download original" onClick={() => setMenu(null)} /></a>
+                <a href={curImage.download} style={{ textDecoration: "none" }}><MenuItem icon={<IDownload />} label="Download original" onClick={() => setMenu(null)} /></a>
                 <MenuItem icon={<ITrash />} label="Remove image" danger onClick={() => setMenu("delete")} />
               </>
             )}
             {menu === "main" && !curImage.archivedAt && (
               <>
                 <div style={{ padding: "8px 10px 12px", display: "flex", alignItems: "center", gap: 12 }}>
-                  <img src={curImage.thumb} alt="" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 8 }} />
+                  <MenuThumb im={curImage} />
                   <div><div style={{ fontWeight: 600 }}>{curImage.role || KIND_META[curImage.kind].label}</div><div className="mono" style={{ fontSize: 11, color: "var(--muted)" }}>{KIND_META[curImage.kind].short} · {curImage.width && curImage.height ? `${curImage.width}×${curImage.height}` : ""} · {(curImage.bytes / 1e6).toFixed(1)} MB</div></div>
                 </div>
                 {curImage.id !== art.coverImageId && <MenuItem icon={<IStar />} label="Make this the main image" onClick={() => imageAction(() => api.updateImage(curImage.id, { makeCover: true }), "Main image updated")} />}
                 <MenuItem icon={<ITag />} label="Change what it is" onClick={() => setMenu("kind")} />
                 <MenuItem icon={<ITag />} label="Rename label" onClick={() => { setLabelText(curImage.role); setMenu("label"); }} />
-                <a href={`${curImage.original}?download=1`} style={{ textDecoration: "none" }}><MenuItem icon={<IDownload />} label="Download original" onClick={() => setMenu(null)} /></a>
+                <a href={curImage.download} style={{ textDecoration: "none" }}><MenuItem icon={<IDownload />} label="Download original" onClick={() => setMenu(null)} /></a>
                 <MenuItem icon={<IArchive />} label="Archive image" testId="archive-image"
                   onClick={() => imageAction(() => api.archiveImage(curImage.id), "Image archived · out of the carousel").then(() => setIdx((i) => Math.max(0, i - 1)))} />
                 <MenuItem icon={<ITrash />} label="Remove image" danger onClick={() => setMenu("delete")} />
@@ -521,13 +540,22 @@ export function PieceView(p: Props) {
   );
 }
 
-function Slide({ src, aspect, label, color, cover, progress, error }: { src: string; aspect: number; label: string; color: string; cover?: boolean; progress?: number; error?: string }) {
+/** The small image at the top of the options sheet: the thumb preview, or a tile while there is none. */
+function MenuThumb({ im, dim }: { im: ImageDTO; dim?: boolean }) {
+  return (
+    <div style={{ position: "relative", width: 44, height: 44, flex: "none", borderRadius: 8, overflow: "hidden", opacity: dim ? 0.7 : 1 }}>
+      {im.thumb ? <img src={im.thumb} alt="" style={{ width: 44, height: 44, objectFit: "cover" }} /> : <PreviewTile state={im.preview} compact />}
+    </div>
+  );
+}
+
+function Slide({ src, preview, aspect, label, color, cover, progress, error }: { src: string | null; preview?: PreviewState; aspect: number; label: string; color: string; cover?: boolean; progress?: number; error?: string }) {
   let w = Math.min(320, 290 * aspect), h = w / aspect;
   if (h > 290) { h = 290; w = h * aspect; }
   return (
     <div style={{ flex: "none", width: "100%", height: "100%", display: "grid", placeItems: "center", position: "relative" }}>
       <div style={{ position: "relative", width: Math.round(w), height: Math.round(h), borderRadius: 4, overflow: "hidden", background: "#23201C", boxShadow: "0 26px 54px rgba(0,0,0,.6)" }}>
-        <img src={src} alt={label} draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        {src ? <img src={src} alt={label} draggable={false} style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <PreviewTile state={preview ?? "pending"} />}
         {progress !== undefined && (
           <div className="fadein" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "rgba(10,9,8,.55)" }} data-testid="upload-progress">
             {error ? <div style={{ padding: 16, textAlign: "center", fontSize: 13, color: "#FFB0A3" }}>{error}</div> : (

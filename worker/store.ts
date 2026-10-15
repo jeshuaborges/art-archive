@@ -6,8 +6,12 @@ import { applyAttrsPatch, loadFieldDefs, type Attrs, type FieldDef, type FieldIs
 import { vectorBackend, type EmbedEnv } from "./embed";
 import {
   DEFAULT_VISION_MODEL, describePrompt, embedText, ftsRow, inlineStep, parseVisionOutput, runIndexing, shouldDescribe, sidecarKey, sidecarRecord,
-  startIndexing, upsertDecision, type IndexOps, type IndexParams,
+  startIndexing, upsertDecision, type IndexOps, type IndexParams, type PreviewOutcome, type TierOutcome,
 } from "./indexing";
+import {
+  describeSource, needsPreview, orientedSize, PALETTE_SAMPLE, paletteFromRgb, previewKey, previewPlan, previewState, previewTransform,
+  serverPreviewable, servedKey, storageClassFor,
+} from "./media";
 import {
   archivedIdFilter, archivedWhere, archivePatch, bulkIdsSchema, countArchived, coverAfterHiding, coverAfterRestoring, isShown, selectImages,
   shownIds, tallyBulk, uniqueIds, vectorTopK, type ArchivedMode, type BulkOutcome, type CoverDecision,
@@ -18,6 +22,8 @@ export interface Env extends EmbedEnv {
   ASSETS: Fetcher;
   /** The ArtworkIndexer Workflow (production). Absent in local dev, where indexing runs inline. */
   INDEXER?: Workflow<IndexParams>;
+  /** Cloudflare Images (production): makes previews the phone couldn't. Absent in local dev, where those stay pending. */
+  IMAGES?: ImagesBinding;
   VISION_MODEL?: string;
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
@@ -52,13 +58,20 @@ interface ImageRow {
 const now = () => new Date().toISOString();
 export const imgUrl = (key: string | null) => (key ? "/img/" + key.split("/").map(encodeURIComponent).join("/") : null);
 
+/**
+ * `display` and `thumb` are previews only (null while `preview` is "pending" or
+ * "unavailable"); the app never shows the original. `original` names the file
+ * (record.json uses it); `download` is the one URL that fetches it.
+ */
 function imageDTO(r: ImageRow) {
+  const original = imgUrl(servedKey(r, "download"));
   return {
     id: r.id, artworkId: r.artwork_id, kind: r.kind, role: r.role, caption: r.caption, takenOn: r.taken_on,
     width: r.width, height: r.height, bytes: r.bytes, contentType: r.content_type, sha256: r.sha256,
     palette: JSON.parse(r.palette) as string[], sortOrder: r.sort_order, createdAt: r.created_at,
     archivedAt: r.archived_at, archivedBy: r.archived_by,
-    original: imgUrl(r.r2_key), display: imgUrl(r.display_key || r.r2_key), thumb: imgUrl(r.thumb_key || r.display_key || r.r2_key),
+    original, download: original && `${original}?download=1`,
+    display: imgUrl(servedKey(r, "display")), thumb: imgUrl(servedKey(r, "thumb")), preview: previewState(r),
   };
 }
 export type ImageDTO = ReturnType<typeof imageDTO>;
@@ -101,22 +114,27 @@ export async function getArtwork(env: Env, idOrCatalog: string, images: Archived
 export async function listSummaries(env: Env, archived: ArchivedMode = "exclude") {
   const { results } = await env.DB.prepare(`
     SELECT a.id, a.catalog_id, a.title, a.year_start, a.year_end, a.circa, a.status, a.attrs, a.palette, a.version, a.updated_at, a.archived_at,
-           COALESCE(c.id, f.id) AS cover_id, COALESCE(c.thumb_key, f.thumb_key) AS thumb_key, COALESCE(c.display_key, f.display_key) AS display_key,
-           COALESCE(c.width, f.width) AS w, COALESCE(c.height, f.height) AS h,
+           COALESCE(c.id, f.id) AS cover_id, CASE WHEN c.id IS NOT NULL THEN c.r2_key ELSE f.r2_key END AS r2_key,
+           CASE WHEN c.id IS NOT NULL THEN c.thumb_key ELSE f.thumb_key END AS thumb_key, CASE WHEN c.id IS NOT NULL THEN c.display_key ELSE f.display_key END AS display_key,
+           COALESCE(c.content_type, f.content_type) AS content_type, COALESCE(c.bytes, f.bytes) AS bytes, COALESCE(c.width, f.width) AS w, COALESCE(c.height, f.height) AS h,
            (SELECT COUNT(*) FROM images i WHERE i.artwork_id = a.id AND i.deleted_at IS NULL AND i.archived_at IS NULL) AS image_count
     FROM artworks a
     LEFT JOIN images c ON c.id = a.cover_image_id AND c.deleted_at IS NULL AND c.archived_at IS NULL
     LEFT JOIN images f ON f.id = (SELECT id FROM images x WHERE x.artwork_id = a.id AND x.deleted_at IS NULL AND x.archived_at IS NULL ORDER BY (x.kind <> 'work'), x.sort_order, x.created_at LIMIT 1)
     WHERE a.deleted_at IS NULL AND ${archivedWhere(archived, "a.archived_at")}
     ORDER BY a.year_start IS NULL, a.year_start, a.catalog_id`).all<Record<string, unknown>>();
-  return results.map((r) => ({
+  return results.map((r) => {
+    const keys = r.cover_id ? { r2_key: r.r2_key as string, display_key: r.display_key as string | null, thumb_key: r.thumb_key as string | null } : null;
+    return {
     id: r.id as string, catalogId: r.catalog_id as string, title: r.title as string,
     yearStart: r.year_start as number | null, yearEnd: r.year_end as number | null, circa: r.circa === 1,
     status: r.status as string, attrs: JSON.parse(r.attrs as string) as Attrs, palette: JSON.parse(r.palette as string) as string[],
     version: r.version as number, updatedAt: r.updated_at as string, archivedAt: r.archived_at as string | null,
-    thumb: imgUrl(r.thumb_key as string | null), display: imgUrl(r.display_key as string | null),
+    thumb: keys && imgUrl(servedKey(keys, "thumb")), display: keys && imgUrl(servedKey(keys, "display")),
+    preview: keys && previewState({ ...keys, content_type: r.content_type as string, bytes: r.bytes as number }),
     aspect: r.w && r.h ? (r.w as number) / (r.h as number) : null, imageCount: r.image_count as number,
-  }));
+    };
+  });
 }
 
 // ----------------------------------------------------------- mutations
@@ -178,7 +196,8 @@ async function writeText(env: Env, a: ArtworkDTO, defs: FieldDef[]) {
                     SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM artworks WHERE id = ?1 AND deleted_at IS NULL)`)
       .bind(r.artwork_id, r.catalog_id, r.title, r.attrs_text, r.ai_description),
   ]);
-  await env.BUCKET.put(sidecarKey(a), JSON.stringify(sidecarRecord(a, defs, STATUS_LABELS), null, 2), { httpMetadata: { contentType: "application/json" } });
+  await env.BUCKET.put(sidecarKey(a), JSON.stringify(sidecarRecord(a, defs, STATUS_LABELS), null, 2),
+    { httpMetadata: { contentType: "application/json" }, storageClass: storageClassFor("sidecar") });
 }
 
 /** FTS row + record.json for an artwork, now. Returns the usual view (archived images left out). */
@@ -191,10 +210,10 @@ export async function syncText(env: Env, id: string): Promise<ArtworkDTO> {
 export const scheduleIndexing = (env: Env, params: IndexParams) =>
   startIndexing(env.INDEXER, params, () => runIndexing(params, indexOps(env, params.artworkId), inlineStep));
 
-/** Sync the text now and schedule the rest. */
-async function reindex(env: Env, id: string, describeKey?: string): Promise<ArtworkDTO> {
+/** Sync the text now and schedule the rest (`extra`: previews to make, a preview to describe). */
+async function reindex(env: Env, id: string, extra: Omit<IndexParams, "artworkId"> = {}): Promise<ArtworkDTO> {
   const a = await syncText(env, id);
-  await scheduleIndexing(env, describeKey ? { artworkId: a.id, describeKey } : { artworkId: a.id });
+  await scheduleIndexing(env, { artworkId: a.id, ...extra });
   return a;
 }
 
@@ -205,7 +224,11 @@ export function indexOps(env: Env, artworkId: string): IndexOps {
     return a ? embedText(a, await loadFieldDefs(env.DB)) : null;
   };
   return {
+    preview: (imageId) => makePreviews(env, artworkId, imageId),
+    tierOriginal: (imageId) => tierOriginal(env, imageId),
     async describe(key) {
+      // only ever a display preview: never the original (large, and in Infrequent Access)
+      if (!describeSource(key)) return false;
       const visionReady = env.EMBEDDINGS === "workers-ai" && !!env.AI;
       const row = await env.DB.prepare("SELECT ai_description, deleted_at FROM artworks WHERE id = ?").bind(artworkId).first<{ ai_description: string | null; deleted_at: string | null }>();
       if (!shouldDescribe({ describeKey: key, visionReady, row }) || !env.AI) return false;
@@ -410,8 +433,12 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
 
   const base = `artworks/${a.catalogId}/${sha.slice(0, 16)}`;
   const origKey = `${base}.${sniffed.ext}`;
-  await env.BUCKET.put(origKey, buf, { httpMetadata: { contentType: sniffed.type }, customMetadata: { originalName: original.name.slice(0, 200), uploadedBy: by }, sha256: sha });
-  const putVariant = async (field: string, suffix: string) => {
+  // The original is the backup: Infrequent Access. Only a download reads it back.
+  await env.BUCKET.put(origKey, buf, {
+    httpMetadata: { contentType: sniffed.type }, customMetadata: { originalName: original.name.slice(0, 200), uploadedBy: by }, sha256: sha,
+    storageClass: storageClassFor("original"),
+  });
+  const putVariant = async (field: string, suffix: "display" | "thumb") => {
     const f = form.get(field);
     if (!(f instanceof File) || !f.size) return null;
     if (f.size > MAX_VARIANT) throw new HttpError(413, `${field} is too large`);
@@ -419,11 +446,13 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
     const vt = sniffImage(vb);
     if (!vt || !["image/jpeg", "image/png", "image/webp"].includes(vt.type)) throw new HttpError(415, `${field} must be a JPEG, WebP or PNG image`);
     const key = `${base}-${suffix}.${vt.ext}`;
-    await env.BUCKET.put(key, vb, { httpMetadata: { contentType: vt.type } });
+    await env.BUCKET.put(key, vb, { httpMetadata: { contentType: vt.type }, storageClass: storageClassFor(suffix) });
     return key;
   };
   const displayKey = await putVariant("display", "display");
   const thumbKey = await putVariant("thumb", "thumb");
+  // e.g. HEIC the phone's browser couldn't decode: the server makes the previews (in the background)
+  const makePreview = needsPreview({ display_key: displayKey, thumb_key: thumbKey }) && serverPreviewable({ contentType: sniffed.type, bytes: original.size });
   const order = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM images WHERE artwork_id = ? AND kind = ?").bind(a.id, meta.kind).first<{ n: number }>();
   const id = crypto.randomUUID();
   await env.DB.prepare(`INSERT INTO images (id, artwork_id, kind, role, r2_key, display_key, thumb_key, sha256, content_type, bytes, width, height, palette, caption, taken_on, sort_order, uploaded_by)
@@ -433,9 +462,111 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   const becomesCover = meta.makeCover || (!a.coverImageId && meta.kind === "work") || (!a.cover);
   if (becomesCover) await setCover(env, a.id, id, meta.palette);
   else await env.DB.prepare("UPDATE artworks SET updated_at = ? WHERE id = ?").bind(now(), a.id).run();
-  await reindex(env, a.id, becomesCover && meta.kind === "work" ? displayKey || origKey : undefined);
+  const describe = becomesCover && meta.kind === "work";
+  await reindex(env, a.id, {
+    ...(makePreview ? { previewImageId: id } : {}),
+    ...(describe && displayKey ? { describeKey: displayKey } : describe && makePreview ? { describePreview: true } : {}),
+  });
   const row = await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first<ImageRow>();
   return { image: imageDTO(row!), duplicate: false };
+}
+
+// ----------------------------------------------------------- previews and storage classes (shell)
+
+const streamOf = (bytes: ArrayBuffer) => new Response(bytes).body!;
+const bytesOf = (s: ReadableStream<Uint8Array>) => new Response(s).arrayBuffer();
+
+/** One preview: the source through Cloudflare Images, as WebP at the preview's size. */
+async function renderPreview(images: ImagesBinding, source: ReadableStream<Uint8Array>, which: "display" | "thumb") {
+  const t = previewTransform(which);
+  const out = await images.input(source).transform(t.transform).output(t.output);
+  return bytesOf(out.image());
+}
+
+/** Width and height from Images (info() is free), or null for anything it can't size. */
+async function sizeOf(images: ImagesBinding, source: ReadableStream<Uint8Array>) {
+  const info = await images.info(source);
+  return "width" in info ? { width: info.width, height: info.height } : null;
+}
+
+/** The palette from a tiny raw-RGB render of the display preview. Best effort: a preview without one is still a preview. */
+async function paletteOf(images: ImagesBinding, display: ArrayBuffer) {
+  try {
+    const out = await images.input(streamOf(display)).transform({ width: PALETTE_SAMPLE, height: PALETTE_SAMPLE, fit: "squeeze" }).output({ format: "rgb" });
+    return paletteFromRgb(new Uint8Array(await bytesOf(out.image())));
+  } catch (e) { console.warn("palette from preview failed", e); return []; }
+}
+
+/**
+ * The preview step: make an image's missing previews with Cloudflare Images,
+ * write them to R2 (Standard), and record them on the image (plus its size and
+ * palette when the phone sent none, and the piece's palette when this is its
+ * cover). Idempotent: an image that has its previews is left alone.
+ */
+async function makePreviews(env: Env, artworkId: string, imageId: string): Promise<PreviewOutcome> {
+  const row = await env.DB.prepare("SELECT * FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<ImageRow>();
+  if (!row) return { status: "gone", displayKey: null, paletteChanged: false };
+  const plan = previewPlan(row, !!env.IMAGES);
+  if (plan.kind === "ready") return { status: "ready", displayKey: row.display_key, paletteChanged: false };
+  if (plan.kind === "skip" || !env.IMAGES) {
+    if (plan.kind === "skip") console.warn("preview not made", imageId, plan.reason);
+    return { status: "skipped", displayKey: row.display_key, paletteChanged: false };
+  }
+  const images = env.IMAGES;
+  const src = await env.BUCKET.get(plan.source === "original" ? row.r2_key : row.display_key!);
+  if (!src) return { status: "gone", displayKey: row.display_key, paletteChanged: false };
+
+  let display: ArrayBuffer, displayKey = row.display_key, size: { width: number; height: number } | null = null;
+  if (plan.make.includes("display")) {
+    // the original is read once: one branch to size it, one to render the display preview
+    const [forInfo, forDisplay] = src.body.tee();
+    const [orig, rendered] = await Promise.all([sizeOf(images, forInfo).catch(() => null), renderPreview(images, forDisplay, "display")]);
+    display = rendered;
+    size = orientedSize(orig, await sizeOf(images, streamOf(display)).catch(() => null));
+    displayKey = previewKey(row.r2_key, "display");
+    await env.BUCKET.put(displayKey, display, { httpMetadata: { contentType: "image/webp" }, storageClass: storageClassFor("display") });
+  } else {
+    display = await src.arrayBuffer();
+  }
+  let thumbKey = row.thumb_key;
+  if (plan.make.includes("thumb")) {
+    thumbKey = previewKey(row.r2_key, "thumb");
+    await env.BUCKET.put(thumbKey, await renderPreview(images, streamOf(display), "thumb"), { httpMetadata: { contentType: "image/webp" }, storageClass: storageClassFor("thumb") });
+  }
+  const palette = JSON.parse(row.palette).length ? null : await paletteOf(images, display);
+  await env.DB.prepare(`UPDATE images SET display_key = ?1, thumb_key = ?2, width = COALESCE(width, ?3), height = COALESCE(height, ?4),
+                        palette = CASE WHEN palette = '[]' AND ?5 IS NOT NULL THEN ?5 ELSE palette END WHERE id = ?6`)
+    .bind(displayKey, thumbKey, size?.width ?? null, size?.height ?? null, palette?.length ? JSON.stringify(palette) : null, row.id).run();
+  // the piece's palette follows its cover; fill it in only if nothing set it meanwhile
+  let paletteChanged = false;
+  if (palette?.length) {
+    const r = await env.DB.prepare("UPDATE artworks SET palette = ? WHERE id = ? AND cover_image_id = ? AND palette = '[]'").bind(JSON.stringify(palette), artworkId, row.id).run();
+    paletteChanged = r.meta.changes > 0;
+  }
+  return { status: "made", displayKey, paletteChanged };
+}
+
+/**
+ * The backfill's step: rewrite an original uploaded before originals went to
+ * Infrequent Access, keeping its metadata. Idempotent: one already there is left
+ * alone (a rewrite would restart its 30-day minimum). Not called on upload.
+ */
+async function tierOriginal(env: Env, imageId: string): Promise<TierOutcome> {
+  const row = await env.DB.prepare("SELECT r2_key FROM images WHERE id = ?").bind(imageId).first<{ r2_key: string }>();
+  const head = row && await env.BUCKET.head(row.r2_key);
+  if (!row || !head) return "gone";
+  const target = storageClassFor("original");
+  if (head.storageClass === target) return "already";
+  const obj = await env.BUCKET.get(row.r2_key, { onlyIf: { etagMatches: head.etag } });
+  if (!obj || !("body" in obj)) throw new Error("original changed while moving it; retrying");
+  // a fixed-length stream, so R2 takes it without buffering up to 80 MB in memory
+  const { readable, writable } = new FixedLengthStream(obj.size);
+  const [, put] = await Promise.all([
+    obj.body.pipeTo(writable),
+    env.BUCKET.put(row.r2_key, readable, { httpMetadata: obj.httpMetadata, customMetadata: obj.customMetadata, storageClass: target }),
+  ]);
+  if (!put) throw new Error("original was not rewritten");
+  return "moved";
 }
 
 /** Carry out a cover decision; the piece's palette follows its cover. */
@@ -596,7 +727,7 @@ export async function exportAll(env: Env, date = new Date()) {
   ]);
   const key = `backups/${date.toISOString().slice(0, 10)}.json`;
   const body = JSON.stringify({ format: "anne-laddon-archive-export/v1", exportedAt: date.toISOString(), field_defs: fields.results, artworks: artworks.results, images: images.results, artwork_revisions: revisions.results });
-  await env.BUCKET.put(key, body, { httpMetadata: { contentType: "application/json" } });
+  await env.BUCKET.put(key, body, { httpMetadata: { contentType: "application/json" }, storageClass: storageClassFor("backup") });
   return {
     key, bytes: body.length, artworks: artworks.results.length, images: images.results.length,
     archivedArtworks: countArchived(artworks.results), archivedImages: countArchived(images.results),
