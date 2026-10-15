@@ -72,7 +72,8 @@ export function sidecarRecord(a: ArtworkDTO, defs: FieldDef[], statusLabels: Rec
     }),
     description: a.aiDescription, palette: a.palette,
     images: a.images.map((i) => ({
-      file: i.original?.split("/").pop(), kind: i.kind, role: i.role, caption: i.caption, sha256: i.sha256, width: i.width, height: i.height,
+      file: i.original?.split("/").pop(), originalName: i.originalName, kind: i.kind, role: i.role, caption: i.caption, sha256: i.sha256, width: i.width, height: i.height,
+      bytes: i.bytes, contentType: i.contentType, tech: i.tech,
       ...(i.archivedAt ? { archived: { at: i.archivedAt, by: i.archivedBy } } : {}),
     })),
     version: a.version, updatedAt: a.updatedAt,

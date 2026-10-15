@@ -17,12 +17,16 @@ import {
   archivedIdFilter, archivedWhere, archivePatch, bulkIdsSchema, countArchived, coverAfterHiding, coverAfterRestoring, isShown, selectImages,
   shownIds, tallyBulk, uniqueIds, vectorTopK, type ArchivedMode, type BulkOutcome, type CoverDecision,
 } from "./archive";
+import { HEAD_BYTES, readTech, type Chunk, type Tech } from "./techmeta";
+import { assessPrint, bestOf, fixityMatches, fixityState, FIXITY_DAYS, GRADE_ORDER, parsePhysicalSize, type Inches, type PrintGrade } from "./printready";
 
 export interface Env extends EmbedEnv {
   BUCKET: R2Bucket;
   ASSETS: Fetcher;
   /** The ArtworkIndexer Workflow (production). Absent in local dev, where indexing runs inline. */
   INDEXER?: Workflow<IndexParams>;
+  /** The AssetChecker Workflow (production): reads originals' headers and re-checks their checksums. */
+  ASSET_CHECKER?: Workflow<AssetCheckParams>;
   /** Cloudflare Images (production): makes previews the phone couldn't. Absent in local dev, where those stay pending. */
   IMAGES?: ImagesBinding;
   VISION_MODEL?: string;
@@ -55,7 +59,9 @@ interface ImageRow {
   sha256: string; content_type: string; bytes: number; width: number | null; height: number | null; palette: string;
   caption: string | null; taken_on: string | null; sort_order: number; created_at: string;
   deleted_at: string | null; archived_at: string | null; archived_by: string | null;
+  original_name: string | null; tech: string | null; tech_read_at: string | null; fixity_checked_at: string | null; fixity_ok: number | null;
 }
+export interface AssetCheckParams { imageIds: string[] }
 
 const now = () => new Date().toISOString();
 export const imgUrl = (key: string | null) => (key ? "/img/" + key.split("/").map(encodeURIComponent).join("/") : null);
@@ -65,8 +71,9 @@ export const imgUrl = (key: string | null) => (key ? "/img/" + key.split("/").ma
  * "unavailable"); the app never shows the original. `original` names the file
  * (record.json uses it); `download` is the one URL that fetches it.
  */
-function imageDTO(r: ImageRow) {
+function imageDTO(r: ImageRow, size: Inches | null = null, at = new Date()) {
   const original = imgUrl(servedKey(r, "download"));
+  const tech = r.tech ? (JSON.parse(r.tech) as Tech) : null;
   return {
     id: r.id, artworkId: r.artwork_id, kind: r.kind, role: r.role, caption: r.caption, takenOn: r.taken_on,
     width: r.width, height: r.height, bytes: r.bytes, contentType: r.content_type, sha256: r.sha256,
@@ -74,6 +81,10 @@ function imageDTO(r: ImageRow) {
     archivedAt: r.archived_at, archivedBy: r.archived_by,
     original, download: original && `${original}?download=1`,
     display: imgUrl(servedKey(r, "display")), thumb: imgUrl(servedKey(r, "thumb")), preview: previewState(r),
+    originalName: r.original_name, tech,
+    // only files of the finished work are print candidates: a study or progress shot isn't the painting
+    print: r.kind === "work" ? assessPrint(r, tech, size) : null,
+    fixity: { state: fixityState(r.fixity_checked_at, r.fixity_ok, at), checkedAt: r.fixity_checked_at },
   };
 }
 export type ImageDTO = ReturnType<typeof imageDTO>;
@@ -88,8 +99,11 @@ function sortImages(imgs: ImageRow[]) {
  */
 export function artworkDTO(a: ArtworkRow, rows: ImageRow[], images: ArchivedMode = "exclude") {
   const { shown, archivedCount } = selectImages(sortImages([...rows]), images);
-  const imgs = shown.map(imageDTO);
-  const vis = sortImages(rows.filter((r) => !r.archived_at)).map(imageDTO);
+  const size = parsePhysicalSize((JSON.parse(a.attrs) as Attrs).dimensions);
+  const dto = (r: ImageRow) => imageDTO(r, size);
+  const imgs = shown.map(dto);
+  const vis = sortImages(rows.filter((r) => !r.archived_at)).map(dto);
+  const best = bestOf(vis.filter((i) => i.kind === "work"));
   const cover = vis.find((i) => i.id === a.cover_image_id) || vis.find((i) => i.kind === "work") || vis[0] || null;
   return {
     id: a.id, catalogId: a.catalog_id, title: a.title, yearStart: a.year_start, yearEnd: a.year_end, circa: a.circa === 1,
@@ -97,6 +111,7 @@ export function artworkDTO(a: ArtworkRow, rows: ImageRow[], images: ArchivedMode
     aiDescription: a.ai_description, aiDescriptionImageId: a.ai_description_image_id, coverImageId: cover ? cover.id : null, version: a.version,
     createdAt: a.created_at, updatedAt: a.updated_at, archivedAt: a.archived_at, archivedBy: a.archived_by,
     images: imgs, cover, archivedImageCount: archivedCount,
+    print: best && { imageId: best.id, ...best.print! },
   };
 }
 export type ArtworkDTO = ReturnType<typeof artworkDTO>;
@@ -463,10 +478,16 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   const order = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM images WHERE artwork_id = ? AND kind = ?").bind(a.id, meta.kind).first<{ n: number }>();
   const id = crypto.randomUUID();
   const before = await coverRow(env, a.id);
-  await env.DB.prepare(`INSERT INTO images (id, artwork_id, kind, role, r2_key, display_key, thumb_key, sha256, content_type, bytes, width, height, palette, caption, taken_on, sort_order, uploaded_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  // The whole file is in hand: read its headers now. R2 checked the SHA-256 on the
+  // way in (the put above names it), so the fixity record starts verified.
+  const tech = techFromWhole(sniffed.type, buf);
+  const at = now();
+  await env.DB.prepare(`INSERT INTO images (id, artwork_id, kind, role, r2_key, display_key, thumb_key, sha256, content_type, bytes, width, height, palette, caption, taken_on, sort_order, uploaded_by,
+                                            original_name, tech, tech_read_at, fixity_checked_at, fixity_ok)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
     .bind(id, a.id, meta.kind, meta.role, origKey, displayKey, thumbKey, sha, sniffed.type, original.size,
-      meta.width ?? null, meta.height ?? null, JSON.stringify(meta.palette), meta.caption ?? null, meta.takenOn ?? null, order?.n ?? 0, by).run();
+      meta.width ?? tech?.width ?? null, meta.height ?? tech?.height ?? null, JSON.stringify(meta.palette), meta.caption ?? null, meta.takenOn ?? null, order?.n ?? 0, by,
+      original.name.slice(0, 200) || null, tech && JSON.stringify(tech), at, at).run();
   const becomesCover = meta.makeCover || (!a.coverImageId && meta.kind === "work") || (!a.cover);
   if (becomesCover) await setCover(env, a.id, id, meta.palette);
   else await env.DB.prepare("UPDATE artworks SET updated_at = ? WHERE id = ?").bind(now(), a.id).run();
@@ -476,6 +497,140 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   });
   const row = await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first<ImageRow>();
   return { image: imageDTO(row!), duplicate: false };
+}
+
+// ----------------------------------------------------------- assets: headers and fixity (shell)
+
+/** Headers of a file already in memory. Never fails an upload: unreadable headers are just unknown. */
+function techFromWhole(contentType: string, buf: ArrayBuffer): Tech | null {
+  try { const r = readTech(contentType, [{ offset: 0, bytes: new Uint8Array(buf) }], buf.byteLength); return "tech" in r ? r.tech : null; }
+  catch (e) { console.warn("couldn't read headers", e); return null; }
+}
+
+/**
+ * Read an original's headers from R2: its head, then whatever range the parser
+ * asks for (a TIFF's tags can sit at the end), a few times at most. Also
+ * records the name the file arrived with, from the object's metadata.
+ */
+export async function readAssetTech(env: Env, imageId: string): Promise<{ read: boolean; format: string | null }> {
+  const r = await env.DB.prepare("SELECT * FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<ImageRow>();
+  if (!r) return { read: false, format: null };
+  const head = await env.BUCKET.get(r.r2_key, { range: { offset: 0, length: HEAD_BYTES } });
+  if (!head) throw new Error(`original missing from R2: ${r.r2_key}`);
+  const size = head.size;
+  const chunks: Chunk[] = [{ offset: 0, bytes: new Uint8Array(await head.arrayBuffer()) }];
+  let tech: Tech | null = null;
+  for (let i = 0; i < 6 && !tech; i++) {
+    let res;
+    try { res = readTech(r.content_type, chunks, size); }
+    catch (e) { console.warn(`couldn't read headers of ${r.r2_key}`, e); break; }
+    if ("tech" in res) { tech = res.tech; break; }
+    const more = await env.BUCKET.get(r.r2_key, { range: res.need });
+    if (!more) break;
+    chunks.push({ offset: res.need.offset, bytes: new Uint8Array(await more.arrayBuffer()) });
+  }
+  const name = head.customMetadata?.originalName || null;
+  await env.DB.prepare("UPDATE images SET tech = ?, tech_read_at = ?, original_name = COALESCE(original_name, ?) WHERE id = ?")
+    .bind(tech && JSON.stringify(tech), now(), name, imageId).run();
+  return { read: !!tech, format: tech?.format ?? null };
+}
+
+/** Re-read the whole original and compare its SHA-256 with the one recorded at upload. */
+export async function checkFixity(env: Env, imageId: string): Promise<{ ok: boolean | null }> {
+  const r = await env.DB.prepare("SELECT id, r2_key, sha256 FROM images WHERE id = ? AND deleted_at IS NULL").bind(imageId).first<Pick<ImageRow, "id" | "r2_key" | "sha256">>();
+  if (!r) return { ok: null };
+  const obj = await env.BUCKET.get(r.r2_key);
+  let ok = false;
+  if (obj) {
+    const digest = new crypto.DigestStream("SHA-256");
+    await obj.body.pipeTo(digest);
+    const hex = [...new Uint8Array(await digest.digest)].map((x) => x.toString(16).padStart(2, "0")).join("");
+    ok = fixityMatches(r.sha256, hex);
+  }
+  if (!ok) console.error(`FIXITY FAILURE: ${r.r2_key} ${obj ? "does not match its recorded SHA-256" : "is missing"}`);
+  await env.DB.prepare("UPDATE images SET fixity_checked_at = ?, fixity_ok = ? WHERE id = ?").bind(now(), ok ? 1 : 0, imageId).run();
+  return { ok };
+}
+
+/** Originals whose headers haven't been read, or whose checksum check is missing or older than FIXITY_DAYS. */
+export async function dueAssetChecks(env: Env, limit: number, at = new Date()): Promise<string[]> {
+  const cutoff = new Date(at.getTime() - FIXITY_DAYS * 864e5).toISOString();
+  const { results } = await env.DB.prepare(`SELECT id FROM images WHERE deleted_at IS NULL
+      AND (tech_read_at IS NULL OR fixity_checked_at IS NULL OR fixity_checked_at < ?)
+      ORDER BY tech_read_at IS NOT NULL, fixity_checked_at IS NOT NULL, fixity_checked_at LIMIT ?`).bind(cutoff, limit).all<{ id: string }>();
+  return results.map((r) => r.id);
+}
+
+/** What a check does for one image: the headers if unread, the checksum if due. */
+export async function checkAsset(env: Env, imageId: string, at = new Date()) {
+  const r = await env.DB.prepare("SELECT tech_read_at, fixity_checked_at, fixity_ok FROM images WHERE id = ?").bind(imageId).first<Pick<ImageRow, "tech_read_at" | "fixity_checked_at" | "fixity_ok">>();
+  if (!r) return { tech: null, fixity: null };
+  const tech = r.tech_read_at ? null : await readAssetTech(env, imageId);
+  const fixity = fixityState(r.fixity_checked_at, r.fixity_ok, at) === "verified" ? null : await checkFixity(env, imageId);
+  return { tech, fixity };
+}
+
+export const ASSET_BATCH = 25;
+
+/**
+ * Queue checks for everything due, in AssetChecker batches (inline in local
+ * dev, where there is no Workflow). `max` bounds one call.
+ */
+export async function queueAssetChecks(env: Env, max = 2000) {
+  const ids = await dueAssetChecks(env, max);
+  const batches: string[][] = [];
+  for (let i = 0; i < ids.length; i += ASSET_BATCH) batches.push(ids.slice(i, i + ASSET_BATCH));
+  if (env.ASSET_CHECKER) {
+    for (let i = 0; i < batches.length; i += 100)
+      await env.ASSET_CHECKER.createBatch(batches.slice(i, i + 100).map((imageIds) => ({ params: { imageIds } })));
+  } else {
+    for (const id of ids) await checkAsset(env, id);
+  }
+  return { queued: ids.length, batches: batches.length, inline: !env.ASSET_CHECKER };
+}
+
+/**
+ * The archive as a set of print masters: for each live piece, its best file of
+ * the finished work, plus how the originals are kept. What the artist reads to
+ * know which pieces are safely captured and which need rescanning.
+ */
+export async function assetReport(env: Env, at = new Date()) {
+  const [{ results: arts }, { results: imgs }] = await Promise.all([
+    env.DB.prepare("SELECT * FROM artworks WHERE deleted_at IS NULL AND archived_at IS NULL").all<ArtworkRow>(),
+    env.DB.prepare("SELECT i.* FROM images i JOIN artworks a ON a.id = i.artwork_id WHERE i.deleted_at IS NULL AND i.archived_at IS NULL AND a.deleted_at IS NULL AND a.archived_at IS NULL").all<ImageRow>(),
+  ]);
+  const byArt = new Map<string, ImageRow[]>();
+  for (const i of imgs) (byArt.get(i.artwork_id) ?? byArt.set(i.artwork_id, []).get(i.artwork_id)!).push(i);
+  const grades: Record<PrintGrade | "none", number> = { master: 0, print: 0, small: 0, reference: 0, none: 0 };
+  const pieces = arts.map((a) => {
+    const size = parsePhysicalSize((JSON.parse(a.attrs) as Attrs).dimensions);
+    const files = (byArt.get(a.id) ?? []).map((r) => imageDTO(r, size, at));
+    const best = bestOf(files.filter((f) => f.kind === "work"));
+    grades[best?.print?.grade ?? "none"]++;
+    return {
+      id: a.id, catalogId: a.catalog_id, title: a.title, year: a.year_start, sizeKnown: !!size,
+      grade: best?.print?.grade ?? null, summary: best?.print?.summary ?? "No image of the finished work",
+      thumb: best?.thumb ?? files[0]?.thumb ?? null, files: files.length,
+    };
+  });
+  const fixity = { verified: 0, due: 0, unchecked: 0, failed: 0 };
+  let oldest: string | null = null;
+  for (const i of imgs) {
+    fixity[fixityState(i.fixity_checked_at, i.fixity_ok, at)]++;
+    if (i.fixity_checked_at && (!oldest || i.fixity_checked_at < oldest)) oldest = i.fixity_checked_at;
+  }
+  const rank = (g: PrintGrade | null) => (g ? GRADE_ORDER.indexOf(g) : GRADE_ORDER.length);
+  return {
+    generatedAt: at.toISOString(),
+    pieces: pieces.length, grades,
+    files: imgs.length, bytes: imgs.reduce((s, i) => s + i.bytes, 0),
+    formats: Object.entries(imgs.reduce<Record<string, number>>((m, i) => ((m[i.content_type] = (m[i.content_type] || 0) + 1), m), {})).map(([type, count]) => ({ type, count })),
+    headersRead: imgs.filter((i) => i.tech_read_at).length,
+    missingSize: pieces.filter((p) => !p.sizeKnown).length,
+    fixity: { ...fixity, oldestCheck: oldest, failures: imgs.filter((i) => i.fixity_ok === 0).map((i) => ({ imageId: i.id, artworkId: i.artwork_id, key: i.r2_key })) },
+    /** Weakest first: what most needs a rescan. */
+    needsAttention: pieces.filter((p) => rank(p.grade) >= 2).sort((x, y) => rank(y.grade) - rank(x.grade) || (x.year ?? 9999) - (y.year ?? 9999)),
+  };
 }
 
 // ----------------------------------------------------------- previews and storage classes (shell)

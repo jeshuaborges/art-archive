@@ -5,13 +5,14 @@ import { fieldDefInputSchema, loadFieldDefs, OPTION_SCHEMAS, type FieldDefRow, t
 import { handleMcp } from "./mcp";
 import {
   HttpError, STATUS_LABELS, IMAGE_KINDS, addImage, createArtwork, deleteArtwork, deleteImage, exportAll, getArtwork,
-  listRevisions, listSummaries, search, setArtworkArchived, setArtworksArchived, setImageArchived, similar, updateArtwork, updateImage, type Env,
+  assetReport, listRevisions, listSummaries, queueAssetChecks, search, setArtworkArchived, setArtworksArchived, setImageArchived, similar, updateArtwork, updateImage, type Env,
 } from "./store";
 import { vectorBackend } from "./embed";
 import { ARCHIVED_MODES, parseArchivedMode } from "./archive";
-import { imgAccess } from "./media";
+import { downloadDisposition, imgAccess } from "./media";
 
 export { ArtworkIndexer } from "./indexer";
+export { AssetChecker } from "./assetchecker";
 
 type App = { Bindings: Env; Variables: { user: Identity } };
 const intParam = (v: string | undefined, def: number, max: number) => { const n = Math.floor(Number(v)); return Number.isFinite(n) && n >= 1 ? Math.min(max, n) : def; };
@@ -115,6 +116,11 @@ app.post("/api/images/:id/unarchive", async (c) => c.json(await setImageArchived
 
 app.get("/api/search", async (c) => c.json(await search(c.env, c.req.query("q") || "", intParam(c.req.query("limit"), 60, 200), archivedParam(c.req.query("archived")))));
 
+// Originals as print masters: per-piece readiness and how the files are kept.
+app.get("/api/assets/report", async (c) => c.json(await assetReport(c.env)));
+// Read every original's headers and re-check checksums that are due (in the background).
+app.post("/api/admin/check-assets", async (c) => c.json(await queueAssetChecks(c.env, intParam(c.req.query("max"), 2000, 5000))));
+
 app.post("/api/admin/backup", async (c) => c.json(await exportAll(c.env)));
 app.get("/api/admin/backups", async (c) => {
   const list = await c.env.BUCKET.list({ prefix: "backups/", limit: 1000 });
@@ -142,7 +148,7 @@ app.get("/img/*", async (c) => {
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox");
   if (!("body" in obj) || !obj.body) return new Response(null, { status: 304, headers });
-  if (download) headers.set("Content-Disposition", `attachment; filename="${key.split("/").pop()}"`);
+  if (download) headers.set("Content-Disposition", downloadDisposition(obj.customMetadata?.originalName, key));
   return new Response(obj.body, { headers });
 });
 
@@ -154,5 +160,7 @@ export default {
   fetch: app.fetch,
   async scheduled(_ctrl: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(exportAll(env).then((r) => console.log("backup written", r)));
+    // a rolling checksum pass: every original is re-read about every FIXITY_DAYS
+    ctx.waitUntil(queueAssetChecks(env, 150).then((r) => console.log("asset checks queued", r)));
   },
 } satisfies ExportedHandler<Env>;

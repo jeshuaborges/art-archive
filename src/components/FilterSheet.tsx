@@ -3,6 +3,7 @@ import type { ArchivedMode, FieldDef, Filters, Summary } from "../types";
 import { emptyFilters } from "../types";
 import { clamp, STATUS_COLOR, SWATCHES, vibrate } from "../util";
 import { Sheet } from "./Sheet";
+import { IShield } from "./Icons";
 
 interface Props {
   open: boolean;
@@ -14,9 +15,10 @@ interface Props {
   onChange: (f: Filters) => void;
   resultCount: number;
   bounds: [number, number];
+  onOpenReadiness: () => void;
 }
 
-export function FilterSheet({ open, onClose, fields, items, statuses, filters, onChange, resultCount, bounds }: Props) {
+export function FilterSheet({ open, onClose, fields, items, statuses, filters, onChange, resultCount, bounds, onOpenReadiness }: Props) {
   // select fields offer their choices; filterable text fields offer the distinct values in use
   const filterable = fields.filter((f) => f.filterable && !f.archived && (f.type === "select" || f.type === "multi_select" || f.type === "text"));
   const choicesFor = (f: FieldDef) => {
@@ -50,6 +52,15 @@ export function FilterSheet({ open, onClose, fields, items, statuses, filters, o
         </div>
       }>
       <div style={{ padding: "6px 20px 24px", display: "flex", flexDirection: "column", gap: 22 }}>
+        <button className="press" onClick={onOpenReadiness} data-testid="open-readiness"
+          style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderRadius: 16, border: "1px solid var(--line-2)", background: "var(--surface)", color: "var(--text)", textAlign: "left" }}>
+          <span style={{ color: "#8FD3A0", flex: "none" }}><IShield size={20} /></span>
+          <span style={{ flex: 1 }}>
+            <span style={{ display: "block", fontSize: 15, fontWeight: 600 }}>Print readiness</span>
+            <span style={{ display: "block", marginTop: 2, fontSize: 12.5, color: "var(--muted)" }}>Which pieces could be reprinted, and how the originals are kept</span>
+          </span>
+          <span aria-hidden style={{ color: "var(--muted)", fontSize: 18 }}>›</span>
+        </button>
         {filterable.map((f) => {
           const sel = filters.values[f.key] || [];
           const choices = choicesFor(f).filter((c) => countFor(f.key, c) > 0 || sel.includes(c));

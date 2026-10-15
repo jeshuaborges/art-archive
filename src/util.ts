@@ -1,4 +1,4 @@
-import type { ImageKind, Summary } from "./types";
+import type { ImageKind, PrintGrade, Summary } from "./types";
 
 export const STATUS_COLOR: Record<string, string> = {
   in_studio: "#E3D3B4", on_show: "#A796FF", sold: "#FF8A4C", gifted: "#8FC79E",
@@ -65,3 +65,21 @@ export const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b
 export const pct = (m: number) => `${Math.round(m * 100)}%`;
 
 export function mediumOf(a: { attrs: Record<string, unknown> }) { return (a.attrs.medium as string) || ""; }
+
+/** "8.1 MB", "640 KB", "1.24 GB" */
+export function fmtBytes(n: number) {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(n / 1e3))} KB`;
+}
+
+/** How each print grade reads at a glance. */
+export const GRADE_META: Record<PrintGrade, { label: string; short: string; color: string }> = {
+  master: { label: "Archival master", short: "Master", color: "#8FD3A0" },
+  print: { label: "Print quality", short: "Print", color: "#BCB2FF" },
+  small: { label: "Small prints only", short: "Small", color: "#FFD678" },
+  reference: { label: "Reference only", short: "Reference", color: "#FF9C8F" },
+};
+
+/** "Oct 15, 2026" */
+export const fmtDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });

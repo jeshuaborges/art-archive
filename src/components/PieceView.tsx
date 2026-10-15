@@ -2,7 +2,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { api, ApiError } from "../api";
 import type { Artwork, FieldDef, ImageDTO, ImageKind, PreviewState, Summary } from "../types";
 import { clamp, KIND_META, pct, STATUS_COLOR, vibrate, yearLabel } from "../util";
-import { IArchive, IBack, IDownload, IMore, IPlus, ISpark, IStar, ITag, ITrash, ICheck } from "./Icons";
+import { IArchive, IBack, IDownload, IExpand, IMore, IPlus, ISpark, IStar, ITag, ITrash, ICheck } from "./Icons";
+import { Files } from "./Files";
+import { Viewer } from "./Viewer";
 import { PreviewTile } from "./PreviewTile";
 import { ROLES } from "./UploadSheet";
 import { fitArt, pieceSplit, slideBox, type Layout } from "../layout";
@@ -52,6 +54,7 @@ export function PieceView(p: Props) {
   const [menu, setMenu] = useState<null | "main" | "kind" | "label" | "delete">(null);
   const [labelText, setLabelText] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [viewer, setViewer] = useState<{ list: ImageDTO[]; start: number } | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const cg = useRef({ x: 0, y: 0, sc: 1, lock: null as null | "x" | "y", lt: 0, lx: 0, v: 0 });
   const lastId = useRef<string | null>(null);
@@ -80,7 +83,7 @@ export function PieceView(p: Props) {
     const switching = lastId.current !== id;
     lastId.current = id;
     if (switching) {
-      setArt(null); setEditing(false); setDraft(null); setIssues({}); setMenu(null); setConfirmDelete(false); setSimilar([]);
+      setArt(null); setEditing(false); setDraft(null); setIssues({}); setMenu(null); setConfirmDelete(false); setSimilar([]); setViewer(null);
       scroller.current?.scrollTo({ top: 0 });
     }
     load(id, !switching).then((a) => {
@@ -111,10 +114,10 @@ export function PieceView(p: Props) {
   // Escape closes (when not editing)
   useEffect(() => {
     if (!id) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !editing && !menu && !document.querySelector(".sheet[aria-hidden='false']")) p.onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !editing && !menu && !viewer && !document.querySelector(".sheet[aria-hidden='false']")) p.onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [id, editing, menu, p]);
+  }, [id, editing, menu, viewer, p]);
 
   // archived images are read on demand, for the "Archived" tab
   const archivedCount = art?.archivedImageCount || 0;
@@ -202,6 +205,8 @@ export function PieceView(p: Props) {
   };
   const cUp = () => {
     if (!cDrag) return;
+    // a tap (no drag) on an image opens it full screen
+    if (!cg.current.lock && safeIdx < images.length) { setCDrag(false); setCdx(0); setViewer({ list: images, start: safeIdx }); return; }
     let i = safeIdx; const v = cg.current.v;
     if ((cdx < -70 || v < -0.45) && i < slideCount - 1) i++;
     else if ((cdx > 70 || v > 0.45) && i > 0) i--;
@@ -316,6 +321,10 @@ export function PieceView(p: Props) {
         </div>}
       </div>
       {curImage && (
+        <button className="icon-btn press" aria-label="View full screen" onClick={() => setViewer({ list: images, start: safeIdx })} data-testid="full-screen"
+          style={{ position: "absolute", right: 68, bottom: 12, width: 40, height: 40, background: "rgba(18,17,15,.78)", backdropFilter: "blur(10px)" }}><IExpand /></button>
+      )}
+      {curImage && (
         <button className="icon-btn press" aria-label="Image options" onClick={() => setMenu("main")} data-testid="image-menu"
           style={{ position: "absolute", right: 20, bottom: 12, width: 40, height: 40, background: "rgba(18,17,15,.78)", backdropFilter: "blur(10px)" }}><IMore /></button>
       )}
@@ -380,6 +389,7 @@ export function PieceView(p: Props) {
             {art.aiDescription && <p style={{ margin: "16px 0 0", fontSize: 13.5, lineHeight: 1.5, color: "var(--muted)" }}><ISpark size={12} /> {art.aiDescription}</p>}
           </div>
         )}
+        {!editing && art.images.length > 0 && <div style={{ margin: "0 -20px" }}><Files art={art} onView={(imageId) => setViewer({ list: art.images, start: art.images.findIndex((i) => i.id === imageId) })} /></div>}
         {editing && draft && (
           <div className="inup" style={{ display: "flex", flexDirection: "column", gap: 18, marginTop: 10 }} data-testid="edit-form">
             <div>
@@ -527,6 +537,8 @@ export function PieceView(p: Props) {
           {saving ? "Saving…" : changes ? `Save ${changes} ${changes === 1 ? "change" : "changes"}` : "Save"}
         </button>
       </div>
+
+      {viewer && <Viewer images={viewer.list} start={viewer.start} onClose={() => setViewer(null)} />}
 
       {/* image options */}
       {menu && curImage && art && (

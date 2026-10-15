@@ -576,7 +576,7 @@ describe("MCP endpoint", () => {
     assert.equal(init.body.result.serverInfo.name, "anne-laddon-archive");
     assert.equal((await j("/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) })).status, 202);
     const tools = await rpc("tools/list");
-    assert.deepEqual(tools.body.result.tools.map((t) => t.name).sort(), ["add_image", "archive_artworks", "archive_image", "create_artwork", "get_artwork", "list_fields", "search_artworks", "update_artwork"]);
+    assert.deepEqual(tools.body.result.tools.map((t) => t.name).sort(), ["add_image", "archive_artworks", "archive_image", "create_artwork", "get_artwork", "list_fields", "print_readiness", "search_artworks", "update_artwork"]);
   });
   test("searches, reads and updates through tools", async () => {
     const s = await rpc("tools/call", { name: "search_artworks", arguments: { query: "jazz music", limit: 3 } });
@@ -662,5 +662,69 @@ describe("routing", () => {
     const spa = await fetch(BASE + "/some/deep/link");
     assert.equal(spa.status, 200);
     assert.match(await spa.text(), /<div id="root">/);
+  });
+});
+
+describe("originals as print masters", () => {
+  let p, img;
+  test("an upload records what the file is, the name it came with, and a verified checksum", async () => {
+    p = (await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Print master test", attrs: { dimensions: "10 × 8 in" } }) })).body;
+    const tif = await sharp({ create: { width: 3000, height: 2400, channels: 3, background: { r: 150, g: 90, b: 40 } } })
+      .withIccProfile("srgb").tiff({ compression: "lzw", xres: 300 / 25.4, yres: 300 / 25.4 }).toBuffer();
+    const r = await upload(p.id, tif, { kind: "work", role: "Front", width: 3000, height: 2400 }, { name: "OP 1 Print master.tif", type: "image/tiff" });
+    assert.equal(r.status, 201);
+    img = r.body.image;
+    const a = (await j(`/api/artworks/${p.id}`)).body;
+    const f = a.images.find((i) => i.id === img.id);
+    assert.equal(f.originalName, "OP 1 Print master.tif");
+    assert.equal(f.tech.format, "TIFF");
+    assert.equal(f.tech.compression, "LZW");
+    assert.equal(f.tech.lossy, false);
+    assert.equal(f.tech.bitsPerChannel, 8);
+    assert.equal(f.tech.dpi, 300);
+    assert.match(f.tech.iccProfile, /sRGB/i);
+    assert.equal(f.print.grade, "master");
+    assert.equal(f.print.ppiAtSize, 300);
+    assert.equal(f.fixity.state, "verified");
+    assert.equal(a.print.imageId, img.id);
+    assert.equal(a.print.grade, "master");
+  });
+
+  test("a check reads the headers of originals that have none and re-hashes them", async () => {
+    sqlLocal(`UPDATE images SET tech = NULL, tech_read_at = NULL, fixity_checked_at = NULL, fixity_ok = NULL, original_name = NULL WHERE id = '${img.id}'`);
+    const before = (await j(`/api/artworks/${p.id}`)).body.images.find((i) => i.id === img.id);
+    assert.equal(before.tech, null);
+    assert.equal(before.fixity.state, "unchecked");
+    assert.equal(before.print.grade, "master", "pixels alone still grade it");
+    const q = await j("/api/admin/check-assets", { method: "POST" });
+    assert.equal(q.status, 200);
+    assert.equal(q.body.inline, true);
+    assert.ok(q.body.queued >= 1);
+    const after = (await j(`/api/artworks/${p.id}`)).body.images.find((i) => i.id === img.id);
+    assert.equal(after.tech.format, "TIFF");
+    assert.equal(after.tech.dpi, 300);
+    assert.equal(after.originalName, "OP 1 Print master.tif", "from the R2 object's metadata");
+    assert.equal(after.fixity.state, "verified");
+  });
+
+  test("a checksum that no longer matches is reported, not hidden", async () => {
+    sqlLocal(`UPDATE images SET sha256 = '${"0".repeat(64)}', fixity_checked_at = NULL WHERE id = '${img.id}'`);
+    await j("/api/admin/check-assets", { method: "POST" });
+    const f = (await j(`/api/artworks/${p.id}`)).body.images.find((i) => i.id === img.id);
+    assert.equal(f.fixity.state, "failed");
+    const r = (await j("/api/assets/report")).body;
+    assert.ok(r.fixity.failed >= 1);
+    assert.ok(r.fixity.failures.some((x) => x.imageId === img.id));
+  });
+
+  test("the report grades every piece and lists the weakest first", async () => {
+    const r = (await j("/api/assets/report")).body;
+    assert.equal(typeof r.pieces, "number");
+    assert.equal(r.pieces, Object.values(r.grades).reduce((s, n) => s + n, 0));
+    assert.ok(r.grades.master >= 1);
+    assert.ok(r.files >= 1 && r.bytes > 0);
+    const ranks = r.needsAttention.map((x) => ({ reference: 3, small: 2 })[x.grade] ?? 4);
+    assert.deepEqual(ranks, [...ranks].sort((a, b) => b - a));
+    assert.ok(!r.needsAttention.some((x) => x.id === p.id), "a master doesn't need a rescan");
   });
 });

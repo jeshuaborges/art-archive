@@ -1,4 +1,4 @@
-import type { ArchivedMode, Artwork, Config, FieldDef, ImageDTO, Summary } from "./types";
+import type { ArchivedMode, Artwork, AssetReport, Config, FieldDef, ImageDTO, Summary } from "./types";
 import type { Prepared } from "./imageprep";
 import { AJAX_HEADERS, classify, SIGNED_OUT_MESSAGE, UNREACHABLE_MESSAGE, type Outcome } from "./session";
 
@@ -64,6 +64,7 @@ export const api = {
   updateImage: (id: string, body: Record<string, unknown>) => req<Artwork>(`/api/images/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteImage: (id: string) => req<Artwork>(`/api/images/${encodeURIComponent(id)}`, { method: "DELETE" }),
   archiveImage: (id: string) => req<Artwork>(`/api/images/${encodeURIComponent(id)}/archive`, { method: "POST" }),
+  assetReport: () => req<AssetReport>("/api/assets/report"),
   unarchiveImage: (id: string) => req<Artwork>(`/api/images/${encodeURIComponent(id)}/unarchive`, { method: "POST" }),
 
   /** Upload with progress. Sends the untouched original plus phone-made display/thumb variants. */

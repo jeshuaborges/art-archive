@@ -6,7 +6,7 @@
  */
 import { loadFieldDefs } from "./fields";
 import {
-  addImage, createArtwork, getArtwork, listSummaries, search, setArtworksArchived, setImageArchived, updateArtwork, HttpError, IMAGE_KINDS, MAX_ORIGINAL,
+  addImage, assetReport, createArtwork, getArtwork, listSummaries, search, setArtworksArchived, setImageArchived, updateArtwork, HttpError, IMAGE_KINDS, MAX_ORIGINAL,
   STATUS_LABELS, type ArtworkDTO, type Env,
 } from "./store";
 import {
@@ -92,6 +92,11 @@ const TOOLS = [
     },
   },
   {
+    name: "print_readiness",
+    description: "How ready the archive is for reprints: pieces by print grade (master: full size at 300 ppi; print: full size at 150 ppi or 16 in at 300; small; reference), how the originals are kept (file count, bytes, formats, SHA-256 fixity checks), and the pieces most worth rescanning, weakest first.",
+    inputSchema: { type: "object", properties: { limit: { type: "integer", minimum: 1, maximum: 500, default: 50, description: "How many pieces to list as worth rescanning" } } },
+  },
+  {
     name: "archive_image",
     description: "Archive one image (if it was the main image, the next one takes over), or bring it back with archived: false.",
     inputSchema: {
@@ -113,7 +118,11 @@ function must<T>(p: Parsed<T>): T {
 }
 
 const artworkView = (a: ArtworkDTO) => ({
-  ...a, images: a.images.map((i) => ({ id: i.id, kind: i.kind, role: i.role, caption: i.caption, url: i.display, preview: i.preview, archivedAt: i.archivedAt })),
+  ...a, images: a.images.map((i) => ({
+    id: i.id, kind: i.kind, role: i.role, caption: i.caption, url: i.display, preview: i.preview, archivedAt: i.archivedAt,
+    originalName: i.originalName, contentType: i.contentType, width: i.width, height: i.height, bytes: i.bytes, sha256: i.sha256,
+    tech: i.tech, print: i.print, fixity: i.fixity, download: i.download,
+  })),
 });
 
 const MAX_REDIRECTS = 5;
@@ -198,6 +207,11 @@ async function callTool(env: Env, name: string, args: Record<string, unknown>, b
     case "archive_artworks": {
       const { ids, archived } = must(parseArchiveArtworksArgs(args));
       return text(await setArtworksArchived(env, { ids }, archived, by));
+    }
+    case "print_readiness": {
+      const r = await assetReport(env);
+      const limit = Math.min(500, Math.max(1, Number(args.limit) || 50));
+      return text({ ...r, needsAttention: r.needsAttention.slice(0, limit).map(({ thumb, ...p }) => p), needsAttentionTotal: r.needsAttention.length });
     }
     case "archive_image": {
       const { imageId, archived } = must(parseArchiveImageArgs(args));

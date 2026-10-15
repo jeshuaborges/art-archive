@@ -37,6 +37,20 @@ export function imgAccess(key: string, download: boolean): "serve" | "download-o
   return keyRole(key) === "original" && !download ? "download-only" : "serve";
 }
 
+/**
+ * A download saves under the name the file arrived with ("OP 691 Desert
+ * Devotions.tif"), keeping the stored extension; the storage key's name otherwise.
+ * ASCII fallback plus RFC 5987 UTF-8 for names with accents.
+ */
+export function downloadDisposition(originalName: string | undefined, key: string): string {
+  const stored = key.split("/").pop() || "original";
+  const ext = stored.match(/\.[a-z0-9]+$/i)?.[0] ?? "";
+  const base = (originalName || "").replace(/[\\/\0-\x1f"]/g, " ").replace(/\.[a-z0-9]{2,5}$/i, "").trim().slice(0, 150);
+  const name = base ? base + ext : stored;
+  const ascii = name.normalize("NFKD").replace(/[^\x20-\x7e]/g, "").replace(/["\\]/g, "") || stored;
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase())}`;
+}
+
 // ----------------------------------------------------------- previews
 export interface PreviewKeys { r2_key: string; display_key: string | null; thumb_key: string | null }
 export type PreviewState = "ready" | "pending" | "unavailable";

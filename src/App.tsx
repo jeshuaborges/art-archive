@@ -8,6 +8,7 @@ import { TopBar } from "./components/TopBar";
 import { Timeline } from "./components/Timeline";
 import { Wall } from "./components/Wall";
 import { FilterSheet } from "./components/FilterSheet";
+import { ReadinessSheet } from "./components/ReadinessSheet";
 import { PieceView, type PendingUpload } from "./components/PieceView";
 import { ROLES, UploadSheet } from "./components/UploadSheet";
 import { IArchive, ICheck, IClose, IPlus } from "./components/Icons";
@@ -34,7 +35,7 @@ export function App() {
   const [detail, setDetail] = useState<string | null>(null);
   const [editNew, setEditNew] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const [sheet, setSheet] = useState<null | "filters" | "upload">(null);
+  const [sheet, setSheet] = useState<null | "filters" | "upload" | "readiness">(null);
   const [upload, setUpload] = useState<{ mode: "photo" | "new"; artworkId?: string; roleIdx: number }>({ mode: "new", roleIdx: 0 });
   const [pending, setPending] = useState<PendingUpload[]>([]);
   const [toast, setToast] = useState<string | null>(null);
@@ -325,7 +326,8 @@ export function App() {
         onAddImages={(artworkId, roleIdx) => { setUpload({ mode: "photo", artworkId, roleIdx: roleIdx < 0 ? 0 : roleIdx }); setSheet("upload"); }} />
 
       <FilterSheet open={sheet === "filters"} onClose={() => setSheet(null)} fields={fields} items={items || []} statuses={config?.statuses || []}
-        filters={filters} onChange={(f) => { setFilters(f); setTlId(null); }} resultCount={filtered.length} bounds={bounds} />
+        filters={filters} onChange={(f) => { setFilters(f); setTlId(null); }} resultCount={filtered.length} bounds={bounds} onOpenReadiness={() => setSheet("readiness")} />
+      <ReadinessSheet open={sheet === "readiness"} onClose={() => setSheet(null)} onOpen={(id) => openPiece(id)} />
       <UploadSheet open={sheet === "upload"} mode={upload.mode} roleIdx={upload.roleIdx} onRole={(i) => setUpload((u) => ({ ...u, roleIdx: i }))} onClose={() => setSheet(null)} onFiles={onFiles} />
 
       <div aria-live="polite" role="status" data-testid="toast" style={{ position: "absolute", left: "50%", bottom: tlLandscape ? `calc(${strip.height + 10}px + ${stripBottom})` : `calc(${landscape ? 76 : 96}px + var(--sab))`, zIndex: 60, transform: `translate(-50%, ${toast ? 0 : 16}px)`, opacity: toast ? 1 : 0, transition: "transform .45s cubic-bezier(.2,.9,.25,1), opacity .3s", pointerEvents: "none", display: "flex", alignItems: "center", gap: 8, height: 42, padding: "0 16px", borderRadius: 999, background: "var(--text)", color: "#12110F", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", boxShadow: "0 14px 34px rgba(0,0,0,.45)" }}>

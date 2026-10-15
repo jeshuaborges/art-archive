@@ -45,7 +45,11 @@
   // Background indexing after each change (worker/indexer.ts): vision description,
   // embedding and Vectorize upsert as retried steps. Not inherited by named envs,
   // so `dev` has no INDEXER and runs the same steps inline.
-  "workflows": [{ "name": "art-archive-indexer", "binding": "INDEXER", "class_name": "ArtworkIndexer" }],
+  "workflows": [
+    { "name": "art-archive-indexer", "binding": "INDEXER", "class_name": "ArtworkIndexer" },
+    // Reads originals' headers and re-checks their SHA-256 (fixity), a batch at a time.
+    { "name": "art-archive-asset-checker", "binding": "ASSET_CHECKER", "class_name": "AssetChecker" }
+  ],
   // Cloudflare Images: makes the display/thumb previews (as a Workflow step) for
   // uploads the phone couldn't, e.g. HEIC in a browser that can't decode it.
   // Not inherited by named envs, so `dev` has no IMAGES and those previews stay
@@ -59,6 +63,8 @@
     // dev identity instead of Access. Run with `npm run dev`.
     "dev": {
       "name": "art-archive-dev",
+      // never inherit the production custom domain
+      "routes": [],
       "vars": {
         "EMBEDDINGS": "local",
         "EMBED_MODEL": "local",

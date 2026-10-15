@@ -59,6 +59,58 @@ export interface ImageDTO {
   display: string | null;        // previews only: never the original
   thumb: string | null;
   preview: PreviewState;
+  originalName: string | null;   // the name the file arrived with
+  tech: Tech | null;             // read from the original's headers (null until read)
+  print: PrintAssessment | null; // what it can be reprinted at
+  fixity: { state: FixityState; checkedAt: string | null };
+}
+
+/** What an original file is, from its headers (worker/techmeta.ts). */
+export interface Tech {
+  format: string;
+  width: number | null;
+  height: number | null;
+  bitsPerChannel: number | null;
+  colorMode: string | null;
+  hasAlpha: boolean;
+  iccProfile: string | null;
+  dpi: number | null;
+  compression: string | null;
+  lossy: boolean | null;
+  jpegQuality: number | null;
+  camera: string | null;
+  software: string | null;
+  capturedAt: string | null;
+  orientation: number | null;
+}
+
+export type PrintGrade = "master" | "print" | "small" | "reference";
+/** worker/printready.ts */
+export interface PrintAssessment {
+  grade: PrintGrade;
+  label: string;
+  summary: string;
+  megapixels: number;
+  maxAt300: { w: number; h: number };
+  ppiAtSize: number | null;
+  sizeKnown: boolean;
+  notes: string[];
+  warnings: string[];
+}
+/** verified: re-read and matched within 90 days. due: matched, but longer ago. */
+export type FixityState = "verified" | "failed" | "due" | "unchecked";
+
+export interface AssetReport {
+  generatedAt: string;
+  pieces: number;
+  grades: Record<PrintGrade | "none", number>;
+  files: number;
+  bytes: number;
+  formats: { type: string; count: number }[];
+  headersRead: number;
+  missingSize: number;
+  fixity: { verified: number; due: number; unchecked: number; failed: number; oldestCheck: string | null; failures: { imageId: string; artworkId: string; key: string }[] };
+  needsAttention: { id: string; catalogId: string; title: string; year: number | null; sizeKnown: boolean; grade: PrintGrade | null; summary: string; thumb: string | null; files: number }[];
 }
 
 export interface Artwork extends Omit<Summary, "thumb" | "display" | "preview" | "aspect" | "imageCount"> {
@@ -69,6 +121,8 @@ export interface Artwork extends Omit<Summary, "thumb" | "display" | "preview" |
   images: ImageDTO[];          // archived images left out unless asked for
   cover: ImageDTO | null;
   archivedImageCount: number;
+  /** The best file of the finished work, judged for reprints. */
+  print: (PrintAssessment & { imageId: string }) | null;
 }
 
 export interface Config {

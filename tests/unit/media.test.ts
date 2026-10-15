@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  describeSource, imgAccess, keyRole, MAX_PREVIEW_SOURCE, needsPreview, orientedSize, paletteFromRgb, previewKey, previewPlan, previewState,
+  describeSource, downloadDisposition, imgAccess, keyRole, MAX_PREVIEW_SOURCE, needsPreview, orientedSize, paletteFromRgb, previewKey, previewPlan, previewState,
   previewTransform, servedKey, serverPreviewable, storageClassFor,
 } from "../../worker/media";
 import { indexOps, type Env } from "../../worker/store";
@@ -206,5 +206,22 @@ describe("tier step (backfill)", () => {
     expect(await indexOps(env, "a1").tierOriginal("i1")).toBe("already");
     expect(puts).toEqual([]);
     expect(reads).toEqual([]);
+  });
+});
+
+describe("download names", () => {
+  it("saves under the name the file arrived with, keeping the stored extension", () => {
+    expect(downloadDisposition("OP 691 Desert Devotions.tif", "artworks/2005-001/abc.tif"))
+      .toBe(`attachment; filename="OP 691 Desert Devotions.tif"; filename*=UTF-8''OP%20691%20Desert%20Devotions.tif`);
+    expect(downloadDisposition("IMG_0001.JPG", "artworks/2005-001/abc.jpg")).toContain(`filename="IMG_0001.jpg"`);
+  });
+  it("keeps accents for browsers that read UTF-8 names, with an ASCII fallback", () => {
+    const d = downloadDisposition("AC 1225 L'Opède.jpg", "artworks/x/abc.jpg");
+    expect(d).toContain(`filename="AC 1225 L'Opede.jpg"`);
+    expect(d).toContain("filename*=UTF-8''AC%201225%20L%27Op%C3%A8de.jpg");
+  });
+  it("falls back to the stored name and strips anything that could break the header", () => {
+    expect(downloadDisposition(undefined, "artworks/x/abc.tif")).toContain(`filename="abc.tif"`);
+    expect(downloadDisposition('a"b\\c.tif', "artworks/x/abc.tif")).toContain(`filename="a b c.tif"`);
   });
 });

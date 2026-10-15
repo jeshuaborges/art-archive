@@ -19,3 +19,6 @@ export const IStar = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}>
 export const ITrash = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>;
 export const IArchive = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><rect x="3" y="4" width="18" height="5" rx="1.5" /><path d="M5 9v10h14V9M10 13h4" /></svg>;
 export const ITag = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2}><path d="M3 12V4h8l10 10-8 8z" /><circle cx="7.5" cy="8.5" r="1.4" /></svg>;
+export const IExpand = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2.2}><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>;
+export const IInfo = ({ size = 18 }: P) => <svg {...base(size)} strokeWidth={2.2}><circle cx="12" cy="12" r="9" /><path d="M12 11v6M12 7.5v.01" /></svg>;
+export const IShield = ({ size = 16 }: P) => <svg {...base(size)} strokeWidth={2.2}><path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z" /><path d="M8.5 12l2.5 2.5 4.5-5" /></svg>;
