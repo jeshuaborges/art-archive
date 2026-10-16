@@ -5,7 +5,7 @@ import { fieldDefInputSchema, loadFieldDefs, OPTION_SCHEMAS, type FieldDefRow, t
 import { handleMcp } from "./mcp";
 import {
   HttpError, STATUS_LABELS, IMAGE_KINDS, abortLargeUpload, addImage, completeLargeUpload, startLargeUpload, uploadLargePart, createArtwork, deleteArtwork, deleteImage, exportAll, getArtwork,
-  assetReport, listRevisions, listSummaries, queueAssetChecks, search, setArtworkArchived, setArtworksArchived, setImageArchived, similar, updateArtwork, updateImage, type Env,
+  assetReport, listRevisions, uploadedName, listSummaries, queueAssetChecks, search, setArtworkArchived, setArtworksArchived, setImageArchived, similar, updateArtwork, updateImage, type Env,
 } from "./store";
 import { vectorBackend } from "./embed";
 import { ARCHIVED_MODES, parseArchivedMode } from "./archive";
@@ -158,7 +158,7 @@ app.get("/img/*", async (c) => {
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox");
   if (!("body" in obj) || !obj.body) return new Response(null, { status: 304, headers });
-  if (download) headers.set("Content-Disposition", downloadDisposition(obj.customMetadata?.originalName, key));
+  if (download) headers.set("Content-Disposition", downloadDisposition(obj.customMetadata?.originalName && uploadedName(obj.customMetadata.originalName), key));
   return new Response(obj.body, { headers });
 });
 

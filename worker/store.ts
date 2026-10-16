@@ -496,6 +496,13 @@ async function recordImage(env: Env, a: ArtworkDTO, o: {
 }
 
 const imageById = async (env: Env, id: string) => imageDTO((await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first<ImageRow>())!);
+/**
+ * The name a file arrived with. Multipart form encoding (browsers, Node's fetch) escapes three
+ * characters in a file name as %22, %0A and %0D; undo just those, so `SP 06 … 30" wide.jpg`
+ * keeps its quote and a real "%" in a name is left alone.
+ */
+export const uploadedName = (name: string) => name.replace(/%22/g, '"').replace(/%0A|%0D/gi, " ").slice(0, 200);
+
 const UNSUPPORTED = "That doesn't look like an image. Upload a JPEG, PNG, HEIC, WebP, TIFF, AVIF, GIF or Photoshop file.";
 
 export async function addImage(env: Env, artworkId: string, form: FormData, by: string) {
@@ -517,12 +524,12 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   // The original is the backup: Infrequent Access. Only a download reads it back.
   // Naming the SHA-256 makes R2 check it on the way in, so fixity starts verified.
   await env.BUCKET.put(key, buf, {
-    httpMetadata: { contentType: sniffed.type }, customMetadata: { originalName: original.name.slice(0, 200), uploadedBy: by }, sha256: sha,
+    httpMetadata: { contentType: sniffed.type }, customMetadata: { originalName: uploadedName(original.name), uploadedBy: by }, sha256: sha,
     storageClass: storageClassFor("original"),
   });
   const { displayKey, thumbKey } = await putVariants(env, form, base);
   const id = await recordImage(env, a, {
-    key, sha, type: sniffed.type, bytes: original.size, name: original.name, tech: techFromWhole(sniffed.type, buf), techRead: true,
+    key, sha, type: sniffed.type, bytes: original.size, name: uploadedName(original.name), tech: techFromWhole(sniffed.type, buf), techRead: true,
     displayKey, thumbKey, meta, by,
   });
   return { image: await imageById(env, id), duplicate: false };

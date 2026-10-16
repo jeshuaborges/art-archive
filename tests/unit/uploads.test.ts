@@ -21,3 +21,12 @@ describe("Photoshop files", () => {
     expect(sniffImage(head(3))).toBeNull();
   });
 });
+
+describe("uploaded file names", () => {
+  it("keep a quote that multipart encoding escaped, and nothing else", async () => {
+    const { uploadedName } = await import("../../worker/store");
+    expect(uploadedName('SP 06 La Comida Mexicana 30%22 wide.jpg')).toBe('SP 06 La Comida Mexicana 30" wide.jpg');
+    expect(uploadedName("100% cotton%20rag.tif")).toBe("100% cotton%20rag.tif");
+    expect(uploadedName("a%0Ab.jpg")).toBe("a b.jpg");
+  });
+});
