@@ -222,6 +222,10 @@ describe("download names", () => {
   });
   it("falls back to the stored name and strips anything that could break the header", () => {
     expect(downloadDisposition(undefined, "artworks/x/abc.tif")).toContain(`filename="abc.tif"`);
-    expect(downloadDisposition('a"b\\c.tif', "artworks/x/abc.tif")).toContain(`filename="a b c.tif"`);
+    expect(downloadDisposition('a"b\\c.tif', "artworks/x/abc.tif")).toBe(`attachment; filename="a'b c.tif"; filename*=UTF-8''a%22b%20c.tif`);
+  });
+  it("keeps the inch mark of a name like `30\" wide`", () => {
+    expect(downloadDisposition('SP 032 Good n Gooey 30" wide.jpg', "artworks/x/abc.jpg"))
+      .toBe(`attachment; filename="SP 032 Good n Gooey 30' wide.jpg"; filename*=UTF-8''SP%20032%20Good%20n%20Gooey%2030%22%20wide.jpg`);
   });
 });
