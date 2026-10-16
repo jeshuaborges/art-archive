@@ -408,7 +408,8 @@ const imageMetaSchema = z.object({
 
 /**
  * Identify an image by its first bytes rather than trusting the file name or
- * the browser's type. Only real raster photo formats are accepted (no SVG/HTML).
+ * the browser's type. Only real raster formats are accepted (no SVG/HTML):
+ * photos, scans, and Photoshop masters (kept as originals; previews come with them).
  */
 export function sniffImage(buf: ArrayBuffer): { type: string; ext: string } | null {
   const b = new Uint8Array(buf.slice(0, 32));
@@ -418,6 +419,8 @@ export function sniffImage(buf: ArrayBuffer): { type: string; ext: string } | nu
   if (b.length >= 6 && (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a")) return { type: "image/gif", ext: "gif" };
   if (b.length >= 12 && ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") return { type: "image/webp", ext: "webp" };
   if (b.length >= 4 && ((b[0] === 0x49 && b[1] === 0x49 && b[2] === 0x2a && b[3] === 0) || (b[0] === 0x4d && b[1] === 0x4d && b[2] === 0 && b[3] === 0x2a))) return { type: "image/tiff", ext: "tif" };
+  if (b.length >= 6 && ascii(0, 4) === "8BPS" && b[4] === 0 && (b[5] === 1 || b[5] === 2))
+    return b[5] === 1 ? { type: "image/vnd.adobe.photoshop", ext: "psd" } : { type: "image/vnd.adobe.photoshop", ext: "psb" };
   if (b.length >= 12 && ascii(4, 8) === "ftyp") {
     const brand = ascii(8, 12);
     if (["avif", "avis"].includes(brand)) return { type: "image/avif", ext: "avif" };
@@ -433,61 +436,55 @@ async function sha256Hex(buf: ArrayBuffer) {
 }
 
 
-export async function addImage(env: Env, artworkId: string, form: FormData, by: string) {
-  const a = await getArtwork(env, artworkId);
-  const original = form.get("original");
-  if (!(original instanceof File)) throw new HttpError(422, "Missing image file", [{ key: "original", message: "Attach an image" }]);
-  if (!original.size) throw new HttpError(422, "That file is empty", [{ key: "original", message: "The file has no data" }]);
-  if (original.size > MAX_ORIGINAL) throw new HttpError(413, "Image is larger than 80 MB");
-  let meta;
+function parseImageMeta(raw: unknown) {
   try {
-    const metaRaw = form.get("meta");
-    meta = imageMetaSchema.parse(metaRaw ? JSON.parse(String(metaRaw)) : {});
+    return imageMetaSchema.parse(raw ? JSON.parse(String(raw)) : {});
   } catch (e) {
     throw new HttpError(422, "Invalid image details", e instanceof z.ZodError ? zodIssues(e) : [{ key: "meta", message: "Not valid JSON" }]);
   }
-  const buf = await original.arrayBuffer();
-  const sniffed = sniffImage(buf);
-  if (!sniffed) throw new HttpError(415, "That doesn't look like a photo. Upload a JPEG, PNG, HEIC, WebP, TIFF, AVIF or GIF image.");
-  const sha = await sha256Hex(buf);
-  const dupe = await env.DB.prepare("SELECT * FROM images WHERE artwork_id = ? AND sha256 = ? AND deleted_at IS NULL").bind(a.id, sha).first<ImageRow>();
-  if (dupe) return { image: imageDTO(dupe), duplicate: true };
+}
+type ImageMeta = ReturnType<typeof parseImageMeta>;
 
-  const base = `artworks/${a.catalogId}/${sha.slice(0, 16)}`;
-  const origKey = `${base}.${sniffed.ext}`;
-  // The original is the backup: Infrequent Access. Only a download reads it back.
-  await env.BUCKET.put(origKey, buf, {
-    httpMetadata: { contentType: sniffed.type }, customMetadata: { originalName: original.name.slice(0, 200), uploadedBy: by }, sha256: sha,
-    storageClass: storageClassFor("original"),
-  });
-  const putVariant = async (field: string, suffix: "display" | "thumb") => {
+const findDuplicate = (env: Env, artworkId: string, sha: string) =>
+  env.DB.prepare("SELECT * FROM images WHERE artwork_id = ? AND sha256 = ? AND deleted_at IS NULL").bind(artworkId, sha).first<ImageRow>();
+
+/** The phone-made (or importer-made) previews that came with an upload, stored next to the original. */
+async function putVariants(env: Env, form: FormData, base: string) {
+  const put = async (field: "display" | "thumb") => {
     const f = form.get(field);
     if (!(f instanceof File) || !f.size) return null;
     if (f.size > MAX_VARIANT) throw new HttpError(413, `${field} is too large`);
     const vb = await f.arrayBuffer();
     const vt = sniffImage(vb);
     if (!vt || !["image/jpeg", "image/png", "image/webp"].includes(vt.type)) throw new HttpError(415, `${field} must be a JPEG, WebP or PNG image`);
-    const key = `${base}-${suffix}.${vt.ext}`;
-    await env.BUCKET.put(key, vb, { httpMetadata: { contentType: vt.type }, storageClass: storageClassFor(suffix) });
+    const key = `${base}-${field}.${vt.ext}`;
+    await env.BUCKET.put(key, vb, { httpMetadata: { contentType: vt.type }, storageClass: storageClassFor(field) });
     return key;
   };
-  const displayKey = await putVariant("display", "display");
-  const thumbKey = await putVariant("thumb", "thumb");
+  return { displayKey: await put("display"), thumbKey: await put("thumb") };
+}
+
+/**
+ * The image row for an original now safely in R2 (checksum verified), then cover,
+ * reindex and previews. Shared by the one-request upload and the multipart one.
+ */
+async function recordImage(env: Env, a: ArtworkDTO, o: {
+  key: string; sha: string; type: string; bytes: number; name: string; tech: Tech | null; techRead: boolean;
+  displayKey: string | null; thumbKey: string | null; meta: ImageMeta; by: string;
+}) {
+  const { meta } = o;
   // e.g. HEIC the phone's browser couldn't decode: the server makes the previews (in the background)
-  const makePreview = needsPreview({ display_key: displayKey, thumb_key: thumbKey }) && serverPreviewable({ contentType: sniffed.type, bytes: original.size });
+  const makePreview = needsPreview({ display_key: o.displayKey, thumb_key: o.thumbKey }) && serverPreviewable({ contentType: o.type, bytes: o.bytes });
   const order = await env.DB.prepare("SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM images WHERE artwork_id = ? AND kind = ?").bind(a.id, meta.kind).first<{ n: number }>();
   const id = crypto.randomUUID();
   const before = await coverRow(env, a.id);
-  // The whole file is in hand: read its headers now. R2 checked the SHA-256 on the
-  // way in (the put above names it), so the fixity record starts verified.
-  const tech = techFromWhole(sniffed.type, buf);
   const at = now();
   await env.DB.prepare(`INSERT INTO images (id, artwork_id, kind, role, r2_key, display_key, thumb_key, sha256, content_type, bytes, width, height, palette, caption, taken_on, sort_order, uploaded_by,
                                             original_name, tech, tech_read_at, fixity_checked_at, fixity_ok)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`)
-    .bind(id, a.id, meta.kind, meta.role, origKey, displayKey, thumbKey, sha, sniffed.type, original.size,
-      meta.width ?? tech?.width ?? null, meta.height ?? tech?.height ?? null, JSON.stringify(meta.palette), meta.caption ?? null, meta.takenOn ?? null, order?.n ?? 0, by,
-      original.name.slice(0, 200) || null, tech && JSON.stringify(tech), at, at).run();
+    .bind(id, a.id, meta.kind, meta.role, o.key, o.displayKey, o.thumbKey, o.sha, o.type, o.bytes,
+      meta.width ?? o.tech?.width ?? null, meta.height ?? o.tech?.height ?? null, JSON.stringify(meta.palette), meta.caption ?? null, meta.takenOn ?? null, order?.n ?? 0, o.by,
+      o.name.slice(0, 200) || null, o.tech && JSON.stringify(o.tech), o.techRead ? at : null, at).run();
   const becomesCover = meta.makeCover || (!a.coverImageId && meta.kind === "work") || (!a.cover);
   if (becomesCover) await setCover(env, a.id, id, meta.palette);
   else await env.DB.prepare("UPDATE artworks SET updated_at = ? WHERE id = ?").bind(now(), a.id).run();
@@ -495,8 +492,132 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
     ...(makePreview ? { previewImageId: id } : {}),
     ...(becomesCover ? coverDescribeParams(before, await coverRow(env, a.id)) : {}),
   });
-  const row = await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first<ImageRow>();
-  return { image: imageDTO(row!), duplicate: false };
+  return id;
+}
+
+const imageById = async (env: Env, id: string) => imageDTO((await env.DB.prepare("SELECT * FROM images WHERE id = ?").bind(id).first<ImageRow>())!);
+const UNSUPPORTED = "That doesn't look like an image. Upload a JPEG, PNG, HEIC, WebP, TIFF, AVIF, GIF or Photoshop file.";
+
+export async function addImage(env: Env, artworkId: string, form: FormData, by: string) {
+  const a = await getArtwork(env, artworkId);
+  const original = form.get("original");
+  if (!(original instanceof File)) throw new HttpError(422, "Missing image file", [{ key: "original", message: "Attach an image" }]);
+  if (!original.size) throw new HttpError(422, "That file is empty", [{ key: "original", message: "The file has no data" }]);
+  if (original.size > MAX_ORIGINAL) throw new HttpError(413, "Image is larger than 80 MB: send it in parts (POST /api/artworks/:id/uploads)");
+  const meta = parseImageMeta(form.get("meta"));
+  const buf = await original.arrayBuffer();
+  const sniffed = sniffImage(buf);
+  if (!sniffed) throw new HttpError(415, UNSUPPORTED);
+  const sha = await sha256Hex(buf);
+  const dupe = await findDuplicate(env, a.id, sha);
+  if (dupe) return { image: imageDTO(dupe), duplicate: true };
+
+  const base = `artworks/${a.catalogId}/${sha.slice(0, 16)}`;
+  const key = `${base}.${sniffed.ext}`;
+  // The original is the backup: Infrequent Access. Only a download reads it back.
+  // Naming the SHA-256 makes R2 check it on the way in, so fixity starts verified.
+  await env.BUCKET.put(key, buf, {
+    httpMetadata: { contentType: sniffed.type }, customMetadata: { originalName: original.name.slice(0, 200), uploadedBy: by }, sha256: sha,
+    storageClass: storageClassFor("original"),
+  });
+  const { displayKey, thumbKey } = await putVariants(env, form, base);
+  const id = await recordImage(env, a, {
+    key, sha, type: sniffed.type, bytes: original.size, name: original.name, tech: techFromWhole(sniffed.type, buf), techRead: true,
+    displayKey, thumbKey, meta, by,
+  });
+  return { image: await imageById(env, id), duplicate: false };
+}
+
+// ----------------------------------------------------------- large originals, in parts (shell)
+// Requests to a Worker are capped at 100 MB, and a layered Photoshop master or a
+// big scan can be larger. These go up as an R2 multipart upload: start (names
+// the file and its SHA-256), send each part, then complete with the details and
+// previews. Completing re-reads the stored object and checks its SHA-256 before
+// any record points at it.
+
+export const MAX_LARGE_ORIGINAL = 5 * 1024 ** 3;
+export const PART_SIZE = 64 * 1024 * 1024;
+const LARGE_EXT: Record<string, string> = { jpg: "jpg", jpeg: "jpg", png: "png", tif: "tif", tiff: "tif", psd: "psd", psb: "psb", heic: "heic", heif: "heif", webp: "webp", avif: "avif", gif: "gif" };
+const startSchema = z.object({
+  filename: z.string().trim().min(1).max(200),
+  bytes: z.number().int().positive().max(MAX_LARGE_ORIGINAL),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+/** Where a large original goes: the same layout as a one-request upload, from its name's extension (checked against its bytes on completion). */
+export function largeOriginalKey(catalogId: string, sha: string, filename: string): string | null {
+  const ext = LARGE_EXT[(filename.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase()];
+  return ext ? `artworks/${catalogId}/${sha.slice(0, 16)}.${ext}` : null;
+}
+/** An upload key must be one this artwork's uploads make: artworks/<catalog>/<sha16>.<ext>. */
+const keyFor = (a: ArtworkDTO, key: unknown) => {
+  const prefix = `artworks/${a.catalogId}/`;
+  if (typeof key !== "string" || !key.startsWith(prefix) || !/^[0-9a-f]{16}\.[a-z0-9]+$/.test(key.slice(prefix.length))) throw new HttpError(422, "Unknown upload key");
+  return key;
+};
+
+export async function startLargeUpload(env: Env, artworkId: string, input: unknown, by: string) {
+  const a = await getArtwork(env, artworkId);
+  const p = startSchema.safeParse(input);
+  if (!p.success) throw new HttpError(422, "Invalid upload", zodIssues(p.error));
+  const dupe = await findDuplicate(env, a.id, p.data.sha256);
+  if (dupe) return { duplicate: true, image: imageDTO(dupe) };
+  const key = largeOriginalKey(a.catalogId, p.data.sha256, p.data.filename);
+  if (!key) throw new HttpError(415, UNSUPPORTED);
+  const mpu = await env.BUCKET.createMultipartUpload(key, {
+    customMetadata: { originalName: p.data.filename, uploadedBy: by }, storageClass: storageClassFor("original"),
+  });
+  return { duplicate: false, key, uploadId: mpu.uploadId, partSize: PART_SIZE, parts: Math.ceil(p.data.bytes / PART_SIZE) };
+}
+
+export async function uploadLargePart(env: Env, artworkId: string, uploadId: string, partNumber: number, key: unknown, body: ArrayBuffer) {
+  const a = await getArtwork(env, artworkId);
+  if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10000) throw new HttpError(422, "Part numbers run from 1");
+  if (!body.byteLength || body.byteLength > PART_SIZE) throw new HttpError(413, `Each part is at most ${PART_SIZE} bytes`);
+  const part = await env.BUCKET.resumeMultipartUpload(keyFor(a, key), uploadId).uploadPart(partNumber, body);
+  return { partNumber: part.partNumber, etag: part.etag };
+}
+
+export async function abortLargeUpload(env: Env, artworkId: string, uploadId: string, key: unknown) {
+  const a = await getArtwork(env, artworkId);
+  await env.BUCKET.resumeMultipartUpload(keyFor(a, key), uploadId).abort();
+}
+
+const completeSchema = z.object({
+  key: z.string(), sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().positive(), filename: z.string().trim().min(1).max(200),
+  parts: z.array(z.object({ partNumber: z.number().int().min(1), etag: z.string().min(1) })).min(1).max(10000),
+});
+
+export async function completeLargeUpload(env: Env, artworkId: string, uploadId: string, form: FormData, by: string) {
+  const a = await getArtwork(env, artworkId);
+  let up;
+  try { up = completeSchema.parse(JSON.parse(String(form.get("upload") ?? ""))); }
+  catch (e) { throw new HttpError(422, "Invalid upload details", e instanceof z.ZodError ? zodIssues(e) : [{ key: "upload", message: "Not valid JSON" }]); }
+  const meta = parseImageMeta(form.get("meta"));
+  const key = keyFor(a, up.key);
+  if (key !== largeOriginalKey(a.catalogId, up.sha256, up.filename)) throw new HttpError(422, "The key doesn't match the file");
+  await env.BUCKET.resumeMultipartUpload(key, uploadId).complete(up.parts.sort((x, y) => x.partNumber - y.partNumber));
+  // Before anything points at it: the right length, the bytes it says it is, and the SHA-256 it was started with.
+  const fail = async (status: number, msg: string) => { await env.BUCKET.delete(key); throw new HttpError(status, msg); };
+  const head = await env.BUCKET.get(key, { range: { offset: 0, length: 64 } });
+  if (!head) throw new HttpError(500, "The upload didn't complete");
+  if (head.size !== up.bytes) return fail(422, `Expected ${up.bytes} bytes, got ${head.size}`);
+  const sniffed = sniffImage(await head.arrayBuffer());
+  if (!sniffed || !key.endsWith(`.${sniffed.ext}`)) return fail(415, UNSUPPORTED);
+  const whole = await env.BUCKET.get(key);
+  const digest = new crypto.DigestStream("SHA-256");
+  await whole!.body.pipeTo(digest);
+  const sha = [...new Uint8Array(await digest.digest)].map((x) => x.toString(16).padStart(2, "0")).join("");
+  if (!fixityMatches(up.sha256, sha)) return fail(422, "The file's SHA-256 doesn't match: it was changed or damaged on the way. Nothing was kept.");
+  const dupe = await findDuplicate(env, a.id, sha);
+  if (dupe) return { image: imageDTO(dupe), duplicate: true };
+  const base = key.replace(/\.[a-z0-9]+$/, "");
+  const { displayKey, thumbKey } = await putVariants(env, form, base);
+  const id = await recordImage(env, a, {
+    key, sha, type: sniffed.type, bytes: up.bytes, name: up.filename, tech: null, techRead: false, displayKey, thumbKey, meta, by,
+  });
+  await readAssetTech(env, id);   // range reads: the headers without holding the whole file
+  return { image: await imageById(env, id), duplicate: false };
 }
 
 // ----------------------------------------------------------- assets: headers and fixity (shell)

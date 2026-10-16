@@ -28,6 +28,8 @@ export interface Tech {
   software: string | null;
   capturedAt: string | null;
   orientation: number | null;
+  /** Photoshop files: how many layers (0 = flattened). */
+  layers?: number | null;
 }
 
 export interface Chunk { offset: number; bytes: Uint8Array }
@@ -80,6 +82,7 @@ export function readTech(contentType: string, chunks: Chunk[], size: number): Te
       case "image/png": return { tech: readPng(b) };
       case "image/webp": return { tech: readWebp(b) };
       case "image/gif": return { tech: readGif(b) };
+      case "image/vnd.adobe.photoshop": return { tech: readPsd(b) };
       case "image/heic": case "image/heif": return { tech: { ...empty("HEIF"), compression: "HEVC", lossy: true } };
       case "image/avif": return { tech: { ...empty("AVIF"), compression: "AV1", lossy: true } };
       default: return { tech: empty(contentType) };
@@ -318,4 +321,43 @@ function readWebp(b: Bytes): Tech {
 
 function readGif(b: Bytes): Tech {
   return { ...empty("GIF"), width: b.u16(6, true), height: b.u16(8, true), bitsPerChannel: 8, colorMode: "Indexed", compression: "LZW", lossy: false };
+}
+
+// ----------------------------------------------------------- Photoshop
+const PSD_MODE: Record<number, string> = { 0: "Bitmap", 1: "Grayscale", 2: "Indexed", 3: "RGB", 4: "CMYK", 7: "Multichannel", 8: "Duotone", 9: "Lab" };
+const PSD_COMPRESSION: Record<number, string> = { 0: "None", 1: "RLE", 2: "ZIP", 3: "ZIP" };
+
+/** A .psd/.psb: header, image resources (ICC profile, resolution), layer count and how the composite is stored. */
+function readPsd(b: Bytes): Tech {
+  const t = empty("Photoshop");
+  const big = b.u16(4, false) === 2;
+  if (big) t.format = "Photoshop (PSB)";
+  const channels = b.u16(12, false);
+  t.height = b.u32(14, false); t.width = b.u32(18, false);
+  t.bitsPerChannel = b.u16(22, false);
+  t.colorMode = PSD_MODE[b.u16(24, false)] ?? null;
+  t.hasAlpha = (t.colorMode === "RGB" && channels > 3) || (t.colorMode === "CMYK" && channels > 4) || (t.colorMode === "Grayscale" && channels > 1);
+  t.lossy = false;
+  const len = (off: number) => (big ? b.u32(off, false) * 2 ** 32 + b.u32(off + 4, false) : b.u32(off, false));
+  let off = 26;
+  off += 4 + b.u32(off, false);                                  // colour mode data
+  const resEnd = off + 4 + b.u32(off, false);
+  for (let r = off + 4; r + 12 <= resEnd;) {
+    if (b.ascii(r, 4) !== "8BIM") break;
+    const id = b.u16(r + 4, false);
+    const nameLen = b.u8(r + 6), nameBytes = (nameLen + 1 + 1) & ~1;
+    const sizeAt = r + 6 + nameBytes, size = b.u32(sizeAt, false), data = sizeAt + 4;
+    if (id === 1039) t.iccProfile = iccDescription(b.slice(data, size));
+    else if (id === 1005 && size >= 4) t.dpi = resolutionDpi(b.u32(data, false) / 65536, b.u16(data + 4, false) === 2 ? 3 : 2);
+    r = data + size + (size & 1);
+  }
+  const layerSection = resEnd;
+  const layerLen = len(layerSection), lenBytes = big ? 8 : 4;
+  t.layers = 0;
+  if (layerLen > 0) {
+    const infoLen = len(layerSection + lenBytes);
+    if (infoLen > 0) { const n = b.u16(layerSection + lenBytes * 2, false); t.layers = Math.abs(n > 0x7fff ? n - 0x10000 : n); }
+  }
+  t.compression = `Photoshop ${PSD_COMPRESSION[b.u16(layerSection + lenBytes + layerLen, false)] ?? "other"} (lossless)`;
+  return t;
 }

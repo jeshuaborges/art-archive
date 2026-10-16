@@ -6,6 +6,7 @@ import { test, describe, before } from "node:test";
 import assert from "node:assert/strict";
 import sharp from "sharp";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const BASE = process.env.API_BASE || "http://localhost:8788";
 const NOAUTH = process.env.NOAUTH_BASE || "http://localhost:8789";
@@ -726,5 +727,78 @@ describe("originals as print masters", () => {
     const ranks = r.needsAttention.map((x) => ({ reference: 3, small: 2 })[x.grade] ?? 4);
     assert.deepEqual(ranks, [...ranks].sort((a, b) => b - a));
     assert.ok(!r.needsAttention.some((x) => x.id === p.id), "a master doesn't need a rescan");
+  });
+});
+
+describe("large originals in parts, and print fields", () => {
+  const sha = (b) => createHash("sha256").update(b).digest("hex");
+  /** A flattened 8-bit RGB PSD with raw pixel data, padded to `size` bytes of composite. */
+  function psd(w, h, size) {
+    const head = Buffer.alloc(26); head.write("8BPS", 0); head.writeUInt16BE(1, 4); head.writeUInt16BE(3, 12); head.writeUInt32BE(h, 14); head.writeUInt32BE(w, 18); head.writeUInt16BE(8, 22); head.writeUInt16BE(3, 24);
+    const sections = Buffer.alloc(4 + 4 + 4 + 2);   // colour data 0, resources 0, layers 0, compression 0
+    const pixels = Buffer.alloc(size); for (let i = 0; i < size; i++) pixels[i] = (i * 31) & 255;
+    return Buffer.concat([head, sections, pixels]);
+  }
+  async function sendInParts(id, file, name, meta, { tamper = false } = {}) {
+    const start = await j(`/api/artworks/${id}/uploads`, { method: "POST", body: JSON.stringify({ filename: name, bytes: file.length, sha256: sha(file) }) });
+    if (start.status !== 200 || start.body.duplicate) return start;
+    const { key, uploadId } = start.body;
+    const PART = 5 * 1024 * 1024;
+    const parts = [];
+    for (let n = 1, o = 0; o < file.length; n++, o += PART) {
+      let chunk = file.subarray(o, o + PART);
+      if (tamper && n === 1) { chunk = Buffer.from(chunk); chunk[100] ^= 255; }
+      const r = await fetch(`${BASE}/api/artworks/${id}/uploads/${encodeURIComponent(uploadId)}/parts/${n}?key=${encodeURIComponent(key)}`, { method: "PUT", body: chunk });
+      parts.push(await r.json());
+    }
+    const fd = new FormData();
+    fd.append("upload", JSON.stringify({ key, sha256: sha(file), bytes: file.length, filename: name, parts }));
+    fd.append("meta", JSON.stringify(meta));
+    fd.append("display", new File([await jpeg({ r: 120, g: 80, b: 40 }, 400, 500)], "d.jpg", { type: "image/jpeg" }));
+    fd.append("thumb", new File([await jpeg({ r: 120, g: 80, b: 40 }, 120, 150)], "t.jpg", { type: "image/jpeg" }));
+    return j(`/api/artworks/${id}/uploads/${encodeURIComponent(uploadId)}/complete`, { method: "POST", body: fd });
+  }
+  let p;
+  test("prints have Edition and Paper fields", async () => {
+    const fields = (await j("/api/fields")).body.map((f) => f.key);
+    assert.ok(fields.includes("edition") && fields.includes("paper"));
+    p = (await j("/api/artworks", { method: "POST", body: JSON.stringify({ title: "Old Brownie", attrs: { medium: "Serigraph", edition: 135, paper: "Rives BFK", dimensions: "22 × 30 in" } }) })).body;
+    assert.equal(p.attrs.edition, 135);
+    assert.equal(p.attrs.paper, "Rives BFK");
+  });
+  test("a Photoshop master goes up in parts, is checked and described", async () => {
+    const file = psd(720, 900, 11 * 1024 * 1024);
+    const r = await sendInParts(p.id, file, "SP 014 Brownie.psd", { kind: "work", role: "Master file (Photoshop)", width: 720, height: 900 });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const img = r.body.image;
+    assert.equal(img.contentType, "image/vnd.adobe.photoshop");
+    assert.equal(img.originalName, "SP 014 Brownie.psd");
+    assert.equal(img.bytes, file.length);
+    assert.equal(img.sha256, sha(file));
+    assert.equal(img.tech.format, "Photoshop");
+    assert.equal(img.tech.width, 720);
+    assert.equal(img.tech.layers, 0);
+    assert.equal(img.fixity.state, "verified");
+    assert.ok(img.display, "previews sent with it");
+    const dl = await fetch(BASE + img.download);
+    assert.equal(dl.status, 200);
+    assert.equal(sha(Buffer.from(await dl.arrayBuffer())), sha(file));
+    assert.match(dl.headers.get("content-disposition"), /SP 014 Brownie\.psd/);
+    const again = await j(`/api/artworks/${p.id}/uploads`, { method: "POST", body: JSON.stringify({ filename: "copy.psd", bytes: file.length, sha256: sha(file) }) });
+    assert.equal(again.body.duplicate, true);
+  });
+  test("a file changed on the way is refused and nothing is kept", async () => {
+    const file = psd(100, 100, 6 * 1024 * 1024);
+    const r = await sendInParts(p.id, file, "damaged.psd", { kind: "work" }, { tamper: true });
+    assert.equal(r.status, 422);
+    assert.match(r.body.error, /SHA-256/);
+    const a = (await j(`/api/artworks/${p.id}`)).body;
+    assert.ok(!a.images.some((i) => i.originalName === "damaged.psd"));
+  });
+  test("keys and names are checked", async () => {
+    const bad = await j(`/api/artworks/${p.id}/uploads`, { method: "POST", body: JSON.stringify({ filename: "notes.pdf", bytes: 10, sha256: "a".repeat(64) }) });
+    assert.equal(bad.status, 415);
+    const wrongKey = await fetch(`${BASE}/api/artworks/${p.id}/uploads/x/parts/1?key=${encodeURIComponent("artworks/other/aaaaaaaaaaaaaaaa.psd")}`, { method: "PUT", body: "x" });
+    assert.equal(wrongKey.status, 422);
   });
 });

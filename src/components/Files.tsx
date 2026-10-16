@@ -100,6 +100,7 @@ function Details({ f, t }: { f: ImageDTO; t: Tech | null }) {
     ["Colour profile", t.iccProfile ?? "None embedded"],
     ["Compression", t.compression ? `${t.compression}${t.lossy ? " (lossy)" : t.lossy === false ? " (lossless)" : ""}${t.jpegQuality ? `, quality ≈${t.jpegQuality}` : ""}` : null],
     ["Tagged resolution", t.dpi ? `${t.dpi} dpi` : null],
+    ["Layers", t.layers == null ? null : t.layers ? `${t.layers} (layered master)` : "Flattened"],
     ["Captured with", t.camera],
     ["Captured", t.capturedAt ? fmtDate(t.capturedAt) : null],
     ["Software", t.software],

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { fieldDefInputSchema, loadFieldDefs, OPTION_SCHEMAS, type FieldDefRow, type FieldType } from "./fields";
 import { handleMcp } from "./mcp";
 import {
-  HttpError, STATUS_LABELS, IMAGE_KINDS, addImage, createArtwork, deleteArtwork, deleteImage, exportAll, getArtwork,
+  HttpError, STATUS_LABELS, IMAGE_KINDS, abortLargeUpload, addImage, completeLargeUpload, startLargeUpload, uploadLargePart, createArtwork, deleteArtwork, deleteImage, exportAll, getArtwork,
   assetReport, listRevisions, listSummaries, queueAssetChecks, search, setArtworkArchived, setArtworksArchived, setImageArchived, similar, updateArtwork, updateImage, type Env,
 } from "./store";
 import { vectorBackend } from "./embed";
@@ -109,6 +109,16 @@ app.post("/api/artworks/:id/images", async (c) => {
   const r = await addImage(c.env, c.req.param("id"), form, c.get("user").actor);
   return c.json(r, r.duplicate ? 200 : 201);
 });
+// Originals over 80 MB (Worker requests stop at 100 MB): start, send parts, complete.
+app.post("/api/artworks/:id/uploads", async (c) => c.json(await startLargeUpload(c.env, c.req.param("id"), await c.req.json().catch(() => null), c.get("user").actor)));
+app.put("/api/artworks/:id/uploads/:uploadId/parts/:n", async (c) =>
+  c.json(await uploadLargePart(c.env, c.req.param("id"), c.req.param("uploadId"), Number(c.req.param("n")), c.req.query("key"), await c.req.arrayBuffer())));
+app.post("/api/artworks/:id/uploads/:uploadId/complete", async (c) => {
+  const form = await c.req.formData().catch(() => { throw new HttpError(400, "Expected a multipart form"); });
+  const r = await completeLargeUpload(c.env, c.req.param("id"), c.req.param("uploadId"), form, c.get("user").actor);
+  return c.json(r, r.duplicate ? 200 : 201);
+});
+app.delete("/api/artworks/:id/uploads/:uploadId", async (c) => { await abortLargeUpload(c.env, c.req.param("id"), c.req.param("uploadId"), c.req.query("key")); return c.body(null, 204); });
 app.patch("/api/images/:id", async (c) => c.json(await updateImage(c.env, c.req.param("id"), await c.req.json().catch(() => null))));
 app.delete("/api/images/:id", async (c) => c.json(await deleteImage(c.env, c.req.param("id"))));
 app.post("/api/images/:id/archive", async (c) => c.json(await setImageArchived(c.env, c.req.param("id"), true, c.get("user").actor)));

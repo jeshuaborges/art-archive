@@ -82,6 +82,7 @@ export interface Tech {
   software: string | null;
   capturedAt: string | null;
   orientation: number | null;
+  layers?: number | null;
 }
 
 export type PrintGrade = "master" | "print" | "small" | "reference";

@@ -97,3 +97,30 @@ describe("small pieces", () => {
     expect(readTech("application/pdf", [], 10)).toMatchObject({ tech: { format: "application/pdf", width: null } });
   });
 });
+
+describe("reading Photoshop headers", () => {
+  /** A minimal PSD: header, no colour data, a resolution resource, one layer, RLE composite. */
+  function psd({ w = 7200, h = 9000, depth = 16, mode = 3, channels = 4, layers = 3 } = {}) {
+    const out: number[] = [];
+    const u16 = (n: number) => out.push(n >> 8, n & 255);
+    const u32 = (n: number) => out.push((n >>> 24) & 255, (n >> 16) & 255, (n >> 8) & 255, n & 255);
+    out.push(..."8BPS".split("").map((c) => c.charCodeAt(0))); u16(1); out.push(0, 0, 0, 0, 0, 0);
+    u16(channels); u32(h); u32(w); u16(depth); u16(mode);
+    u32(0);                                                   // colour mode data
+    const res = [..."8BIM".split("").map((c) => c.charCodeAt(0)), 0x03, 0xed, 0, 0, 0, 0, 0, 16, 0x01, 0x2c, 0, 0, 0, 1, 0, 1, 0x01, 0x2c, 0, 0, 0, 1, 0, 1];
+    u32(res.length); out.push(...res);
+    u32(6); u32(2); u16(layers);                              // layer and mask section (6 bytes): info length 2, layer count
+    u16(1);                                                   // composite: RLE
+    return new Uint8Array(out);
+  }
+  it("reads size, depth, mode, resolution, layers and compression", () => {
+    const f = psd();
+    expect(readTech("image/vnd.adobe.photoshop", [{ offset: 0, bytes: f }], f.length)).toMatchObject({
+      tech: { format: "Photoshop", width: 7200, height: 9000, bitsPerChannel: 16, colorMode: "RGB", hasAlpha: true, dpi: 300, layers: 3, compression: "Photoshop RLE (lossless)", lossy: false },
+    });
+  });
+  it("reads CMYK without alpha", () => {
+    const f = psd({ mode: 4, channels: 4, layers: 0 });
+    expect(readTech("image/vnd.adobe.photoshop", [{ offset: 0, bytes: f }], f.length)).toMatchObject({ tech: { colorMode: "CMYK", hasAlpha: false, layers: 0 } });
+  });
+});
