@@ -409,7 +409,7 @@ const imageMetaSchema = z.object({
 /**
  * Identify an image by its first bytes rather than trusting the file name or
  * the browser's type. Only real raster formats are accepted (no SVG/HTML):
- * photos, scans, and Photoshop masters (kept as originals; previews come with them).
+ * photos and scans. Photoshop files are recognised so they can be refused by name (refusedFormat).
  */
 export function sniffImage(buf: ArrayBuffer): { type: string; ext: string } | null {
   const b = new Uint8Array(buf.slice(0, 32));
@@ -503,7 +503,18 @@ const imageById = async (env: Env, id: string) => imageDTO((await env.DB.prepare
  */
 export const uploadedName = (name: string) => name.replace(/%22/g, '"').replace(/%0A|%0D/gi, " ").slice(0, 200);
 
-const UNSUPPORTED = "That doesn't look like an image. Upload a JPEG, PNG, HEIC, WebP, TIFF, AVIF, GIF or Photoshop file.";
+const UNSUPPORTED = "That doesn't look like an image. Upload a JPEG, PNG, HEIC, WebP, TIFF, AVIF or GIF image.";
+
+/**
+ * Formats the archive doesn't keep, though it recognises them. A Photoshop file is a working
+ * document (layers, masks, history), much larger than the picture it makes; the archive keeps
+ * the picture. Null: fine to keep.
+ */
+export function refusedFormat(f: { type?: string; ext?: string } | null): string | null {
+  if (f?.type === "image/vnd.adobe.photoshop" || f?.ext === "psd" || f?.ext === "psb")
+    return "Photoshop files aren't kept: they hold layers and edits, not just the picture. Export a flattened TIFF (or a high-quality JPEG) and upload that.";
+  return null;
+}
 
 export async function addImage(env: Env, artworkId: string, form: FormData, by: string) {
   const a = await getArtwork(env, artworkId);
@@ -515,6 +526,8 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
   const buf = await original.arrayBuffer();
   const sniffed = sniffImage(buf);
   if (!sniffed) throw new HttpError(415, UNSUPPORTED);
+  const refused = refusedFormat(sniffed);
+  if (refused) throw new HttpError(415, refused);
   const sha = await sha256Hex(buf);
   const dupe = await findDuplicate(env, a.id, sha);
   if (dupe) return { image: imageDTO(dupe), duplicate: true };
@@ -536,15 +549,14 @@ export async function addImage(env: Env, artworkId: string, form: FormData, by: 
 }
 
 // ----------------------------------------------------------- large originals, in parts (shell)
-// Requests to a Worker are capped at 100 MB, and a layered Photoshop master or a
-// big scan can be larger. These go up as an R2 multipart upload: start (names
+// Requests to a Worker are capped at 100 MB, and a big scan can be larger. These go up as an R2 multipart upload: start (names
 // the file and its SHA-256), send each part, then complete with the details and
 // previews. Completing re-reads the stored object and checks its SHA-256 before
 // any record points at it.
 
 export const MAX_LARGE_ORIGINAL = 5 * 1024 ** 3;
 export const PART_SIZE = 64 * 1024 * 1024;
-const LARGE_EXT: Record<string, string> = { jpg: "jpg", jpeg: "jpg", png: "png", tif: "tif", tiff: "tif", psd: "psd", psb: "psb", heic: "heic", heif: "heif", webp: "webp", avif: "avif", gif: "gif" };
+const LARGE_EXT: Record<string, string> = { jpg: "jpg", jpeg: "jpg", png: "png", tif: "tif", tiff: "tif", heic: "heic", heif: "heif", webp: "webp", avif: "avif", gif: "gif" };
 const startSchema = z.object({
   filename: z.string().trim().min(1).max(200),
   bytes: z.number().int().positive().max(MAX_LARGE_ORIGINAL),
@@ -567,6 +579,8 @@ export async function startLargeUpload(env: Env, artworkId: string, input: unkno
   const a = await getArtwork(env, artworkId);
   const p = startSchema.safeParse(input);
   if (!p.success) throw new HttpError(422, "Invalid upload", zodIssues(p.error));
+  const refused = refusedFormat({ ext: (p.data.filename.match(/\.([a-z0-9]+)$/i)?.[1] || "").toLowerCase() });
+  if (refused) throw new HttpError(415, refused);
   const dupe = await findDuplicate(env, a.id, p.data.sha256);
   if (dupe) return { duplicate: true, image: imageDTO(dupe) };
   const key = largeOriginalKey(a.catalogId, p.data.sha256, p.data.filename);
@@ -610,7 +624,7 @@ export async function completeLargeUpload(env: Env, artworkId: string, uploadId:
   if (!head) throw new HttpError(500, "The upload didn't complete");
   if (head.size !== up.bytes) return fail(422, `Expected ${up.bytes} bytes, got ${head.size}`);
   const sniffed = sniffImage(await head.arrayBuffer());
-  if (!sniffed || !key.endsWith(`.${sniffed.ext}`)) return fail(415, UNSUPPORTED);
+  if (!sniffed || !key.endsWith(`.${sniffed.ext}`)) return fail(415, refusedFormat(sniffed) ?? UNSUPPORTED);
   const whole = await env.BUCKET.get(key);
   const digest = new crypto.DigestStream("SHA-256");
   await whole!.body.pipeTo(digest);

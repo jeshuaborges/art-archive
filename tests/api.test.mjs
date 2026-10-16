@@ -732,12 +732,11 @@ describe("originals as print masters", () => {
 
 describe("large originals in parts, and print fields", () => {
   const sha = (b) => createHash("sha256").update(b).digest("hex");
-  /** A flattened 8-bit RGB PSD with raw pixel data, padded to `size` bytes of composite. */
+  /** An uncompressed TIFF of about 11 MB, so it goes up in three 5 MB parts. */
+  const bigTiff = () => sharp({ create: { width: 2200, height: 1700, channels: 3, background: { r: 140, g: 90, b: 50 } } }).tiff({ compression: "none" }).toBuffer();
   function psd(w, h, size) {
     const head = Buffer.alloc(26); head.write("8BPS", 0); head.writeUInt16BE(1, 4); head.writeUInt16BE(3, 12); head.writeUInt32BE(h, 14); head.writeUInt32BE(w, 18); head.writeUInt16BE(8, 22); head.writeUInt16BE(3, 24);
-    const sections = Buffer.alloc(4 + 4 + 4 + 2);   // colour data 0, resources 0, layers 0, compression 0
-    const pixels = Buffer.alloc(size); for (let i = 0; i < size; i++) pixels[i] = (i * 31) & 255;
-    return Buffer.concat([head, sections, pixels]);
+    return Buffer.concat([head, Buffer.alloc(14), Buffer.alloc(size, 7)]);
   }
   async function sendInParts(id, file, name, meta, { tamper = false } = {}) {
     const start = await j(`/api/artworks/${id}/uploads`, { method: "POST", body: JSON.stringify({ filename: name, bytes: file.length, sha256: sha(file) }) });
@@ -754,8 +753,8 @@ describe("large originals in parts, and print fields", () => {
     const fd = new FormData();
     fd.append("upload", JSON.stringify({ key, sha256: sha(file), bytes: file.length, filename: name, parts }));
     fd.append("meta", JSON.stringify(meta));
-    fd.append("display", new File([await jpeg({ r: 120, g: 80, b: 40 }, 400, 500)], "d.jpg", { type: "image/jpeg" }));
-    fd.append("thumb", new File([await jpeg({ r: 120, g: 80, b: 40 }, 120, 150)], "t.jpg", { type: "image/jpeg" }));
+    fd.append("display", new File([await jpeg({ r: 120, g: 80, b: 40 }, 400, 300)], "d.jpg", { type: "image/jpeg" }));
+    fd.append("thumb", new File([await jpeg({ r: 120, g: 80, b: 40 }, 120, 90)], "t.jpg", { type: "image/jpeg" }));
     return j(`/api/artworks/${id}/uploads/${encodeURIComponent(uploadId)}/complete`, { method: "POST", body: fd });
   }
   let p;
@@ -766,39 +765,52 @@ describe("large originals in parts, and print fields", () => {
     assert.equal(p.attrs.edition, 135);
     assert.equal(p.attrs.paper, "Rives BFK");
   });
-  test("a Photoshop master goes up in parts, is checked and described", async () => {
-    const file = psd(720, 900, 11 * 1024 * 1024);
-    const r = await sendInParts(p.id, file, "SP 014 Brownie.psd", { kind: "work", role: "Master file (Photoshop)", width: 720, height: 900 });
+  test("a large scan goes up in parts, is checked and described", async () => {
+    const file = await bigTiff();
+    const r = await sendInParts(p.id, file, 'SP 014 Brownie 30" high.tif', { kind: "work", role: "Front", width: 2200, height: 1700 });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const img = r.body.image;
-    assert.equal(img.contentType, "image/vnd.adobe.photoshop");
-    assert.equal(img.originalName, "SP 014 Brownie.psd");
+    assert.equal(img.contentType, "image/tiff");
+    assert.equal(img.originalName, 'SP 014 Brownie 30" high.tif');
     assert.equal(img.bytes, file.length);
     assert.equal(img.sha256, sha(file));
-    assert.equal(img.tech.format, "Photoshop");
-    assert.equal(img.tech.width, 720);
-    assert.equal(img.tech.layers, 0);
+    assert.equal(img.tech.format, "TIFF");
+    assert.equal(img.tech.width, 2200);
     assert.equal(img.fixity.state, "verified");
     assert.ok(img.display, "previews sent with it");
     const dl = await fetch(BASE + img.download);
     assert.equal(dl.status, 200);
     assert.equal(sha(Buffer.from(await dl.arrayBuffer())), sha(file));
-    assert.match(dl.headers.get("content-disposition"), /SP 014 Brownie\.psd/);
-    const again = await j(`/api/artworks/${p.id}/uploads`, { method: "POST", body: JSON.stringify({ filename: "copy.psd", bytes: file.length, sha256: sha(file) }) });
+    assert.match(dl.headers.get("content-disposition"), /SP%20014%20Brownie%2030%22%20high\.tif/);
+    const again = await j(`/api/artworks/${p.id}/uploads`, { method: "POST", body: JSON.stringify({ filename: "copy.tif", bytes: file.length, sha256: sha(file) }) });
     assert.equal(again.body.duplicate, true);
   });
   test("a file changed on the way is refused and nothing is kept", async () => {
-    const file = psd(100, 100, 6 * 1024 * 1024);
-    const r = await sendInParts(p.id, file, "damaged.psd", { kind: "work" }, { tamper: true });
+    const file = await bigTiff();
+    const r = await sendInParts(p.id, Buffer.concat([file, Buffer.from("x")]), "damaged.tif", { kind: "work" }, { tamper: true });
     assert.equal(r.status, 422);
     assert.match(r.body.error, /SHA-256/);
     const a = (await j(`/api/artworks/${p.id}`)).body;
-    assert.ok(!a.images.some((i) => i.originalName === "damaged.psd"));
+    assert.ok(!a.images.some((i) => i.originalName === "damaged.tif"));
+  });
+  test("Photoshop files are refused, in one request or in parts", async () => {
+    const file = psd(100, 100, 1024);
+    const one = await upload(p.id, file, { kind: "work" }, { name: "SP 014 Brownie.psd", type: "image/vnd.adobe.photoshop", variants: false });
+    assert.equal(one.status, 415);
+    assert.match(one.body.error, /Photoshop files aren't kept/);
+    const parts = await j(`/api/artworks/${p.id}/uploads`, { method: "POST", body: JSON.stringify({ filename: "SP 014 Brownie.psd", bytes: 153_000_000, sha256: "a".repeat(64) }) });
+    assert.equal(parts.status, 415);
+    assert.match(parts.body.error, /flattened TIFF/);
+    // a Photoshop file renamed .tif is caught by its bytes when the upload completes
+    const disguised = await sendInParts(p.id, psd(100, 100, 6 * 1024 * 1024), "renamed.tif", { kind: "work" });
+    assert.equal(disguised.status, 415);
+    assert.match(disguised.body.error, /Photoshop/);
   });
   test("keys and names are checked", async () => {
     const bad = await j(`/api/artworks/${p.id}/uploads`, { method: "POST", body: JSON.stringify({ filename: "notes.pdf", bytes: 10, sha256: "a".repeat(64) }) });
     assert.equal(bad.status, 415);
-    const wrongKey = await fetch(`${BASE}/api/artworks/${p.id}/uploads/x/parts/1?key=${encodeURIComponent("artworks/other/aaaaaaaaaaaaaaaa.psd")}`, { method: "PUT", body: "x" });
+    const wrongKey = await fetch(`${BASE}/api/artworks/${p.id}/uploads/x/parts/1?key=${encodeURIComponent("artworks/other/aaaaaaaaaaaaaaaa.tif")}`, { method: "PUT", body: "x" });
     assert.equal(wrongKey.status, 422);
   });
 });
+
